@@ -87,6 +87,32 @@ saved to EEPROM about 10 s after the last change, so stepping through values cos
 **DMM settings** (RCL held on the main display): LANGUAGE (CZ/EN), THEME (8 colour themes, the display changes at
 once), SOUND (all beeps on/off).
 
+#### Colour themes
+
+Each theme sets four colours: background, ghost (unlit segments), indicator and bright (lit digits). The LCD
+replica uses them as they are. The text screens (statistics, graph, help, settings) always have a black
+background; a theme with a light background (ORG2, LCD1, LCD2) is used there the other way round. Every picture
+shows the main display (AUTO and REL lit, alarm on both limits) above the statistics screen. The pictures are
+rendered by the firmware's own drawing code (`tools/make_screenshots.sh`).
+
+![All colour themes](images/themes.png)
+
+| Theme | Look |
+|---|---|
+| RED | red LED (the default theme) |
+| GRN | green LED |
+| ORG1 | orange LED / amber |
+| ORG2 | inverted: black digits on an orange background |
+| VFD | vacuum fluorescent display, blue-green |
+| LCD1 | reflective LCD with a green tint |
+| LCD2 | reflective LCD, white |
+| LCD3 | white on black |
+
+Single pictures: [RED](images/theme_red.png) · [GRN](images/theme_grn.png) · [ORG1](images/theme_org1.png) ·
+[ORG2](images/theme_org2.png) · [VFD](images/theme_vfd.png) · [LCD1](images/theme_lcd1.png) ·
+[LCD2](images/theme_lcd2.png) · [LCD3](images/theme_lcd3.png). New themes can be added to `themes[]` in
+`config.h`.
+
 ### Help
 
 ![Help](images/help_en.png)
@@ -231,6 +257,32 @@ a **STO** vrátí zpět. Obrazovka se také sama zavře po 60 s bez stisku. Změ
 
 **Nastavení DMM** (podržení RCL na hlavním displeji): JAZYK (CZ/EN), TEMA (8 barevných témat, displej se změní
 hned), ZVUK (všechna pípnutí ZAP/VYP).
+
+#### Barevná témata
+
+Každé téma určuje čtyři barvy: pozadí, ghost (nesvítící segmenty), indikátor a jas (svítící číslice). Replika LCD
+je používá přímo. Textové obrazovky (statistika, graf, nápověda, nastavení) mají vždy černé pozadí; téma se
+světlým pozadím (ORG2, LCD1, LCD2) se tam použije obráceně. Každý obrázek ukazuje hlavní displej (svítí AUTO a REL,
+alarm na obě meze) a pod ním obrazovku statistiky. Obrázky vykreslil přímo kreslicí kód firmwaru
+(`tools/make_screenshots.sh`).
+
+![Všechna barevná témata](images/themes.png)
+
+| Téma | Vzhled |
+|---|---|
+| RED | červený LED (výchozí téma) |
+| GRN | zelený LED |
+| ORG1 | oranžový LED / jantarový |
+| ORG2 | inverzní: černé číslice na oranžovém pozadí |
+| VFD | vakuový fluorescenční displej, modrozelený |
+| LCD1 | reflexní LCD se zeleným nádechem |
+| LCD2 | reflexní LCD, bílý |
+| LCD3 | bílá na černé |
+
+Jednotlivé obrázky: [RED](images/theme_red.png) · [GRN](images/theme_grn.png) · [ORG1](images/theme_org1.png) ·
+[ORG2](images/theme_org2.png) · [VFD](images/theme_vfd.png) · [LCD1](images/theme_lcd1.png) ·
+[LCD2](images/theme_lcd2.png) · [LCD3](images/theme_lcd3.png). Další témata lze přidat do `themes[]`
+v `config.h`.
 
 ### Nápověda
 

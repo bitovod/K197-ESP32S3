@@ -28,5 +28,35 @@ for n in names:
     im = Image.open('%s/%s.ppm' % (src, n))
     im.resize((im.width * 2, im.height * 2), Image.NEAREST).save('%s/%s.png' % (out, n))
     print('docs/images/%s.png' % n)
+# all color themes: one picture per theme (LCD replica above, statistics below)
+# and an overview sheet with the theme names
+from PIL import ImageDraw, ImageFont
+NAMES = ['RED', 'GRN', 'ORG1', 'ORG2', 'VFD', 'LCD1', 'LCD2', 'LCD3']
+try:
+    font = ImageFont.truetype('DejaVuSans-Bold.ttf', 22)
+except OSError:
+    font = ImageFont.load_default()
+tiles = []
+for i, n in enumerate(NAMES):
+    a = Image.open('%s/theme_%d_lcd.ppm' % (src, i))
+    b = Image.open('%s/theme_%d_ui.ppm' % (src, i))
+    t = Image.new('RGB', (a.width, a.height + b.height + 4), (40, 40, 40))
+    t.paste(a, (0, 0))
+    t.paste(b, (0, a.height + 4))
+    t = t.resize((t.width * 2, t.height * 2), Image.NEAREST)
+    t.save('%s/theme_%s.png' % (out, n.lower()))
+    print('docs/images/theme_%s.png' % n.lower())
+    tiles.append((n, t))
+pad, cap = 16, 34
+w, h = tiles[0][1].width // 2, tiles[0][1].height // 2
+sheet = Image.new('RGB', (pad + 2 * (w + pad), pad + 4 * (h + cap + pad)), (24, 24, 24))
+d = ImageDraw.Draw(sheet)
+for i, (n, t) in enumerate(tiles):
+    x = pad + (i % 2) * (w + pad)
+    y = pad + (i // 2) * (h + cap + pad)
+    d.text((x, y), n, fill=(230, 230, 230), font=font)
+    sheet.paste(t.resize((w, h), Image.NEAREST), (x, y + cap))
+sheet.save('%s/themes.png' % out)
+print('docs/images/themes.png')
 PY
 rm -rf "$TMP"

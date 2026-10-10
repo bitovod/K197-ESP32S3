@@ -93,6 +93,14 @@ int main(int argc, char **argv)
     lcd("lcd_alarm_low", 1, "150000", 0, aut | FB_BIT_MINUS, KEITHLEY_UNIT_V, FB_ALARM_LOW, false);
     lcd("lcd_tag", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, true);
 
+    // every color theme: the LCD replica (lit AUT and REL, the rest as ghost)
+    for (int t = 0; t < (int)themeCount; t++)
+    {
+        char name[48];
+        snprintf(name, sizeof(name), "theme_%d_lcd", t);
+        lcd(name, t, "123456", 0, aut | (1u << KEITHLEY_IND_REL), KEITHLEY_UNIT_V, FB_ALARM_ARMED_BOTH, false);
+    }
+
     // statistics
     {
         FbStatsScene s;
@@ -108,6 +116,13 @@ int main(int argc, char **argv)
         fbComposeStats(gFb, s);
         save("stats_grn", 1, true);
         save("stats_lcd1", 5, true);
+        // the same screen in every color theme
+        for (int t = 0; t < (int)themeCount; t++)
+        {
+            char name[48];
+            snprintf(name, sizeof(name), "theme_%d_ui", t);
+            save(name, t, true);
+        }
     }
 
     // help, first page of the DMM section in both languages
