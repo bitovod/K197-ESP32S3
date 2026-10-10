@@ -6,7 +6,7 @@
 
 - Arduino IDE 2.x, the Espressif **esp32** core. Board settings: ESP32S3 Dev Module (or your board),
   **PSRAM: OPI PSRAM**, **Partition scheme: Huge APP**, **USB CDC On Boot: Enabled**.
-- Libraries: Adafruit GFX, Adafruit_NV3007, Vrekrer SCPI parser, DS3231Centisecond (in `libraries/`), plus the
+- Libraries: Adafruit GFX + BusIO, Vrekrer SCPI parser, Adafruit_NV3007 and DS3231Centisecond (both in `libraries/`), plus the
   core's Wire, SPI and EEPROM.
 - The sketch folder name must equal the main file name: `firmware/ESP32S3_K197/ESP32S3_K197.ino`.
 - The version is `SCPI_IDN_FIRMWARE` in `config.h` (`C2v20` …). It is shown in the help and returned by `*IDN?`.
@@ -112,7 +112,7 @@ Display layout changes are tried as preview pictures first.
 
 - Arduino IDE 2.x, jádro **esp32** od Espressifu. Nastavení desky: ESP32S3 Dev Module (nebo vaše deska),
   **PSRAM: OPI PSRAM**, **Partition scheme: Huge APP**, **USB CDC On Boot: Enabled**.
-- Knihovny: Adafruit GFX, Adafruit_NV3007, Vrekrer SCPI parser, DS3231Centisecond (v `libraries/`) a Wire, SPI
+- Knihovny: Adafruit GFX + BusIO, Vrekrer SCPI parser, Adafruit_NV3007 a DS3231Centisecond (obě v `libraries/`) a Wire, SPI
   a EEPROM z jádra.
 - Název složky sketche musí odpovídat hlavnímu souboru: `firmware/ESP32S3_K197/ESP32S3_K197.ino`.
 - Verze je `SCPI_IDN_FIRMWARE` v `config.h` (`C2v20` …). Zobrazuje se v nápovědě a vrací ji `*IDN?`.

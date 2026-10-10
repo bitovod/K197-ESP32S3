@@ -25,11 +25,13 @@ original K197 display and is covered by the project's MIT license.
 | Library | License |
 |---|---|
 | Arduino core for the ESP32 (Espressif), incl. Wire, SPI, EEPROM, FreeRTOS, ESP-IDF | LGPL-2.1 / Apache-2.0 (see the core) |
-| Adafruit GFX Library | BSD |
-| Adafruit_NV3007 (driver of the NV3007 TFT) | see its source |
+| Adafruit GFX Library, Adafruit BusIO | BSD |
 | Vrekrer SCPI parser | MIT |
 
-`libraries/DS3231Centisecond` is by the project author and is covered by the MIT license of this repository.
+`libraries/DS3231Centisecond` and `libraries/Adafruit_NV3007` are by the project author and are covered by the MIT
+license of this repository. `Adafruit_NV3007` is derived from the `Adafruit_SPITFT` class of the Adafruit GFX
+Library (BSD, linked when building, not included). Despite its name it is not an Adafruit product. The register
+values of its init sequence come from an ESP-IDF reference driver for the NV3007 panel.
 
 ## Trademarks
 
@@ -62,11 +64,13 @@ původního displeje K197 a vztahuje se na ni licence MIT projektu.
 | Knihovna | Licence |
 |---|---|
 | Arduino core pro ESP32 (Espressif), vč. Wire, SPI, EEPROM, FreeRTOS, ESP-IDF | LGPL-2.1 / Apache-2.0 (viz jádro) |
-| Adafruit GFX Library | BSD |
-| Adafruit_NV3007 (ovladač TFT NV3007) | viz jeho zdroj |
+| Adafruit GFX Library, Adafruit BusIO | BSD |
 | Vrekrer SCPI parser | MIT |
 
-`libraries/DS3231Centisecond` je od autora projektu a vztahuje se na ni licence MIT tohoto repozitáře.
+`libraries/DS3231Centisecond` a `libraries/Adafruit_NV3007` jsou od autora projektu a vztahuje se na ně licence MIT
+tohoto repozitáře. `Adafruit_NV3007` je odvozená od třídy `Adafruit_SPITFT` z knihovny Adafruit GFX (BSD, připojuje
+se při překladu, není přiložena). Navzdory názvu nejde o produkt firmy Adafruit. Hodnoty registrů v inicializační
+sekvenci pocházejí z referenčního ovladače ESP-IDF pro panel s NV3007.
 
 ## Ochranné známky
 

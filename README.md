@@ -55,9 +55,10 @@ and an SD card slot (planned).
 3. Libraries:
    - Adafruit GFX Library (Library Manager)
    - Vrekrer SCPI parser (Library Manager)
-   - Adafruit_NV3007 (the NV3007 TFT driver)
-   - [DS3231Centisecond](libraries/DS3231Centisecond), included in this repository: copy it into your Arduino
-     `libraries` folder.
+   - Adafruit BusIO (Library Manager, needed by Adafruit GFX)
+   - [Adafruit_NV3007](libraries/Adafruit_NV3007) (the NV3007 TFT driver, not an official Adafruit product) and
+     [DS3231Centisecond](libraries/DS3231Centisecond), both included in this repository: copy them into your
+     Arduino `libraries` folder.
 4. Open `firmware/ESP32S3_K197/ESP32S3_K197.ino`. All settings (pins, priorities, themes, timings) are in
    `config.h`. Put your instrument's serial number into `SCPI_IDN_SERIAL`.
 
@@ -129,8 +130,9 @@ SD kartu (v plánu).
 3. Knihovny:
    - Adafruit GFX Library (Library Manager)
    - Vrekrer SCPI parser (Library Manager)
-   - Adafruit_NV3007 (ovladač TFT NV3007)
-   - [DS3231Centisecond](libraries/DS3231Centisecond), přiložená v tomto repozitáři: zkopírujte ji do složky
+   - Adafruit BusIO (Library Manager, potřebuje ji Adafruit GFX)
+   - [Adafruit_NV3007](libraries/Adafruit_NV3007) (ovladač TFT NV3007, není to oficiální produkt Adafruit)
+     a [DS3231Centisecond](libraries/DS3231Centisecond), obě přiložené v tomto repozitáři: zkopírujte je do složky
      `libraries` Arduina.
 4. Otevřete `firmware/ESP32S3_K197/ESP32S3_K197.ino`. Veškeré nastavení (piny, priority, témata, časy) je
    v `config.h`. Do `SCPI_IDN_SERIAL` zadejte sériové číslo svého přístroje.
