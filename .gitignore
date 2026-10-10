@@ -1,0 +1,18 @@
+# build output
+build/
+*.bin
+*.elf
+*.map
+*.o
+# host test binaries and previews
+host_tests/test_*
+!host_tests/test_*.cpp
+host_tests/render_screens
+*.ppm
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+__pycache__/
