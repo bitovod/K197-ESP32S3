@@ -99,8 +99,10 @@ bool keithleyReadingToDouble(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpP
     return true;
 }
 
-void keithleyPrintScientific(Stream &interface, double value, bool acMagnitude)
+size_t keithleyFormatScientific(char *buf, size_t bufSize, double value, bool acMagnitude)
 {
+    if (bufSize == 0)
+        return 0;
     bool negative = value < 0;
     double magnitude = fabs(value);
 
@@ -123,18 +125,26 @@ void keithleyPrintScientific(Stream &interface, double value, bool acMagnitude)
         }
     }
 
-    char mantissaBuf[16];
+    char mantissaBuf[32];
     dtostrf(magnitude, 1, 5, mantissaBuf); // "D.ddddd", no sign
-    if (negative)
-        interface.print('-');
-    else if (acMagnitude)
-        interface.print(' '); // AC has no polarity - keep alignment, imply none
-    else
-        interface.print('+');
-    interface.print(mantissaBuf);
-    interface.print('E');
-    interface.print(exponent >= 0 ? '+' : '-');
-    interface.print(abs(exponent));
+    // AC has no polarity - a blank keeps the alignment and implies none
+    char sign = negative ? '-' : (acMagnitude ? ' ' : '+');
+    int n = snprintf(buf, bufSize, "%c%sE%c%d", sign, mantissaBuf, exponent >= 0 ? '+' : '-', abs(exponent));
+    if (n < 0)
+    {
+        buf[0] = '\0';
+        return 0;
+    }
+    return ((size_t)n < bufSize) ? (size_t)n : bufSize - 1;
+}
+
+// v23: the text comes from keithleyFormatScientific(), so the SD card files
+// and the SCPI replies can never differ.
+void keithleyPrintScientific(Stream &interface, double value, bool acMagnitude)
+{
+    char text[24];
+    keithleyFormatScientific(text, sizeof(text), value, acMagnitude);
+    interface.print(text);
 }
 
 void keithleyPrintStatusPrefixValue(Stream &interface, double value, uint8_t unit,

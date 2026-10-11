@@ -88,6 +88,17 @@ static uint16_t dispIndicatorBits = 0;
 static uint8_t dispUnit = KEITHLEY_UNIT_NONE;
 static uint8_t dispAlarm = FB_ALARM_NONE; // v17
 static bool dispTagLit = false;           // v18
+static bool dispSdLit = false;            // v23
+static uint8_t dispHoldInd = 0;           // v24: FB_HOLD_* bits ("HOLD" / "AUTO" lit)
+// v24 DATA HOLD: the LCD replica shows dispHeld instead of the live reading while dispHoldActive. The
+// last DISP_HIST_COUNT complete frames (stored by setUnit(), the last setter of a frame) with their millis()
+// let displayHoldAt() freeze what was SHOWN at a given moment (the first edge of the STO press).
+#define DISP_HIST_COUNT 8
+static DisplayLcdState dispHist[DISP_HIST_COUNT];
+static uint8_t dispHistNext = 0;
+static uint8_t dispHistCount = 0;
+static bool dispHoldActive = false;
+static DisplayLcdState dispHeld;
 static uint8_t dispTheme = CONFIG_DEFAULT_THEME;
 static int16_t dispYOffset = CONFIG_DEFAULT_DISPLAY_Y_OFFSET;
 
@@ -214,16 +225,31 @@ static void displayRenderOnce(bool waitForBlitter)
     uint8_t unit;
     uint8_t alarm;
     bool tagLit;
+    bool sdLit;
+    uint8_t holdInd;
     uint8_t theme;
     int16_t yOffset;
 
     portENTER_CRITICAL(&dispStateMux);
-    memcpy(seg, dispSegBits, sizeof(seg));
-    dp = dispDpPos;
-    ind = dispIndicatorBits;
-    unit = dispUnit;
+    if (dispHoldActive)
+    {
+        // v24: DATA HOLD - the held reading instead of the live one
+        memcpy(seg, dispHeld.segBits, sizeof(seg));
+        dp = dispHeld.dpPos;
+        ind = dispHeld.indicatorBits;
+        unit = dispHeld.unit;
+    }
+    else
+    {
+        memcpy(seg, dispSegBits, sizeof(seg));
+        dp = dispDpPos;
+        ind = dispIndicatorBits;
+        unit = dispUnit;
+    }
+    holdInd = dispHoldInd;
     alarm = dispAlarm;
     tagLit = dispTagLit;
+    sdLit = dispSdLit;
     theme = dispTheme;
     yOffset = dispYOffset;
     portEXIT_CRITICAL(&dispStateMux);
@@ -301,6 +327,8 @@ static void displayRenderOnce(bool waitForBlitter)
         scene.unit = unit;
         scene.alarm = alarm;
         scene.tagLit = tagLit;
+        scene.sdLit = sdLit;
+        scene.hold = holdInd;
         fbComposeLcd(slot.px, scene);
     }
     slot.yOffset = yOffset;
@@ -629,8 +657,113 @@ void setUnit(uint8_t unit)
     }
     portENTER_CRITICAL(&dispStateMux);
     dispUnit = unit;
+    // v24: the frame is complete (setReadingSegments(), setIndicators(), setUnit()) - into the history
+    DisplayLcdState &h = dispHist[dispHistNext];
+    memcpy(h.segBits, dispSegBits, sizeof(h.segBits));
+    h.dpPos = dispDpPos;
+    h.indicatorBits = dispIndicatorBits;
+    h.unit = dispUnit;
+    h.ms = (uint32_t)millis();
+    dispHistNext = (uint8_t)((dispHistNext + 1) % DISP_HIST_COUNT);
+    if (dispHistCount < DISP_HIST_COUNT)
+    {
+        dispHistCount++;
+    }
     portEXIT_CRITICAL(&dispStateMux);
     displayWakeRender();
+}
+
+// ---- v24: DATA HOLD ----
+
+// Caller holds dispStateMux: the current live state into dispHeld.
+static void displayHoldTakeCurrentLocked()
+{
+    memcpy(dispHeld.segBits, dispSegBits, sizeof(dispHeld.segBits));
+    dispHeld.dpPos = dispDpPos;
+    dispHeld.indicatorBits = dispIndicatorBits;
+    dispHeld.unit = dispUnit;
+    dispHeld.ms = (uint32_t)millis();
+}
+
+void displayHoldAt(uint32_t atMs)
+{
+    portENTER_CRITICAL(&dispStateMux);
+    bool found = false;
+    for (uint8_t k = 0; k < dispHistCount; k++)
+    {
+        // newest first: the last frame completed at or before atMs
+        const DisplayLcdState &h = dispHist[(dispHistNext + DISP_HIST_COUNT - 1 - k) % DISP_HIST_COUNT];
+        if ((int32_t)(atMs - h.ms) >= 0)
+        {
+            dispHeld = h;
+            found = true;
+            break;
+        }
+    }
+    if (!found && dispHistCount > 0)
+    {
+        // older than the whole history: the oldest frame known
+        dispHeld = dispHist[(dispHistNext + DISP_HIST_COUNT - dispHistCount) % DISP_HIST_COUNT];
+        found = true;
+    }
+    if (!found)
+    {
+        displayHoldTakeCurrentLocked();
+    }
+    dispHoldActive = true;
+    portEXIT_CRITICAL(&dispStateMux);
+    displayWakeRender();
+}
+
+void displayHoldCurrent()
+{
+    portENTER_CRITICAL(&dispStateMux);
+    displayHoldTakeCurrentLocked();
+    dispHoldActive = true;
+    portEXIT_CRITICAL(&dispStateMux);
+    displayWakeRender();
+}
+
+void displayHoldRelease()
+{
+    portENTER_CRITICAL(&dispStateMux);
+    bool changed = dispHoldActive;
+    dispHoldActive = false;
+    portEXIT_CRITICAL(&dispStateMux);
+    if (changed)
+    {
+        displayWakeRender();
+    }
+}
+
+bool displayHoldIsActive()
+{
+    return dispHoldActive;
+}
+
+bool displayHeldState(DisplayLcdState *out)
+{
+    portENTER_CRITICAL(&dispStateMux);
+    bool active = dispHoldActive;
+    if (active)
+    {
+        *out = dispHeld;
+    }
+    portEXIT_CRITICAL(&dispStateMux);
+    return active;
+}
+
+void setHoldIndicator(uint8_t bits)
+{
+    portENTER_CRITICAL(&dispStateMux);
+    bool changed = (dispHoldInd != bits);
+    dispHoldInd = bits;
+    portEXIT_CRITICAL(&dispStateMux);
+    // like SD!: only the LCD replica shows it - blinking must not re-render the other screens
+    if (changed && uiGetScreen() == UI_SCREEN_LCD)
+    {
+        displayWakeRender();
+    }
 }
 
 void setAlarmIndicator(uint8_t state)
@@ -652,6 +785,20 @@ void setTagIndicator(bool lit)
     dispTagLit = lit;
     portEXIT_CRITICAL(&dispStateMux);
     if (changed)
+    {
+        displayWakeRender();
+    }
+}
+
+void setSdIndicator(bool lit)
+{
+    portENTER_CRITICAL(&dispStateMux);
+    bool changed = (dispSdLit != lit);
+    dispSdLit = lit;
+    portEXIT_CRITICAL(&dispStateMux);
+    // Only the LCD replica shows it: blinking must not re-render the other screens several times a second.
+    // The next render of the LCD takes the current value anyway.
+    if (changed && uiGetScreen() == UI_SCREEN_LCD)
     {
         displayWakeRender();
     }

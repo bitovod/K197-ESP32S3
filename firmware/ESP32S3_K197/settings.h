@@ -30,6 +30,28 @@
 #define SETTINGS_COMM_UART 0
 #define SETTINGS_COMM_USB  1
 
+// v23: the sound setting (SYSTem:BEEP, the DMM settings screen). Stored in
+// the old beepEnabled byte: 0 and 1 keep their meaning (OFF / ON = all), 2 is
+// new. ALL = every sound; ALARMS = only the limit alarm and the SD card
+// alarm; OFF = nothing at all (the SD alarm too).
+#define SETTINGS_BEEP_OFF    0
+#define SETTINGS_BEEP_ALL    1
+#define SETTINGS_BEEP_ALARMS 2
+#define SETTINGS_BEEP_MODES  3
+
+// v23: CSV format of the SD card files. COMMA = ',' between the fields and a
+// decimal point (like LOG:DATA?); SEMICOLON = ';' between the fields and a
+// decimal comma (what a Czech Excel opens directly).
+#define SETTINGS_CSV_COMMA     0
+#define SETTINGS_CSV_SEMICOLON 1
+#define SETTINGS_CSV_FORMATS   2
+
+// v24: what STO held on the LCD starts (hold.h): MANUAL = HOLD of the reading
+// shown at the press, AUTO = AUTO HOLD.
+#define SETTINGS_HOLD_MANUAL 0
+#define SETTINGS_HOLD_AUTO   1
+#define SETTINGS_HOLD_MODES  2
+
 // The persisted blob (layout of the emulated EEPROM). Internal to
 // settings.ino - it is here only because of the Arduino prototype
 // ordering (see settings.ino); use the getters/setters below.
@@ -42,12 +64,14 @@
 // 0xA9 -> 0xAA statsInterval, 0xAA -> 0xAB debugPort (v13), 0xAB -> 0xAC the
 // graph settings (v14), 0xAC -> 0xAD language (v15), 0xAE -> 0xAF the limit
 // alarm (v17), 0xAF -> 0xB0 no new field, the graph span index moved (v21),
-// 0xB0 -> 0xB1 the DS3231 aging offset (v22).
+// 0xB0 -> 0xB1 the DS3231 aging offset (v22), 0xB1 -> 0xB2 SD card logging
+// (v23; beepEnabled became the 3-value beep mode, 0/1 keep their meaning),
+// 0xB2 -> 0xB3 the HOLD mode (v24).
 // From 0xAA on a new field is APPENDED and the previous magic is
 // migrated (old fields kept, the new one gets its default) instead of
 // resetting everything - so a firmware update does not lose the
 // already dialed-in YOFFset/COMM/THEMe.
-#define SETTINGS_MAGIC 0xB1
+#define SETTINGS_MAGIC 0xB3
 #define SETTINGS_MAGIC_V9 0xA9  // layout up to and including displayYOffset
 #define SETTINGS_MAGIC_V11 0xAA // layout up to and including statsInterval
 #define SETTINGS_MAGIC_V13 0xAB // layout up to and including debugPort
@@ -56,6 +80,8 @@
 #define SETTINGS_MAGIC_V16 0xAE // layout up to and including language
 #define SETTINGS_MAGIC_V17 0xAF // same layout as 0xB0; graphSpan counted without +-1/2/5 (v17 ... v20)
 #define SETTINGS_MAGIC_V21 0xB0 // layout up to and including alarmHigh
+#define SETTINGS_MAGIC_V22 0xB1 // layout up to and including rtcAgingSet
+#define SETTINGS_MAGIC_V23 0xB2 // layout up to and including sdCsvFormat
 // 0xAD -> 0xAE (v15): no new field - the graph got the intervals 10 SEC and 30 SEC IN FRONT of the
 // others, so a stored graphInterval of 0xAC/0xAD is moved up by GRAPH_INTERVALS_ADDED_V15.
 #define GRAPH_INTERVALS_ADDED_V15 2
@@ -75,7 +101,7 @@ struct KeithleySettings
     uint16_t autoIntervalSeconds;
     uint8_t theme;
     uint8_t debugEnabled;
-    uint8_t beepEnabled;
+    uint8_t beepEnabled;   // v23: SETTINGS_BEEP_* (0/1 = the old OFF/ON)
     uint8_t commPort;
     int16_t displayYOffset;
     // ---- appended in 0xAA (offsets of the fields above unchanged) ----
@@ -97,6 +123,11 @@ struct KeithleySettings
     // ---- appended in 0xB1 (v22, SYSTem:TIME:AGINg - see rtc.h) ----
     int8_t rtcAging;    // DS3231 aging offset register, written to the chip at boot
     uint8_t rtcAgingSet; // 0 = never set over SCPI: the chip keeps whatever it holds
+    // ---- appended in 0xB2 (v23, SD card logging - see sdlog.h) ----
+    uint8_t sdEnabled;   // 1 = log to the SD card
+    uint8_t sdCsvFormat; // SETTINGS_CSV_*
+    // ---- appended in 0xB3 (v24, DATA HOLD - see hold.h) ----
+    uint8_t holdMode;    // SETTINGS_HOLD_*
 };
 
 // Call once from setup(), before anything else here is used, and
@@ -130,12 +161,11 @@ void settingsSetTheme(uint8_t theme);
 bool settingsGetDebugEnabled();
 void settingsSetDebugEnabled(bool enabled);
 
-// SYSTem:BEEP - see serial_out.ino/beeper.ino. Gates every acoustic
-// signal (currently just the startup chirp) - persisted so the
-// choice survives a power cycle, same reasoning as debugEnabled
-// above.
-bool settingsGetBeepEnabled();
-void settingsSetBeepEnabled(bool enabled);
+// SYSTem:BEEP - see serial_out.ino/beeper.ino. v23: three values
+// (SETTINGS_BEEP_*): every sound, only the alarms, or none. beeper.ino
+// gates every sound by it. Persisted. Out-of-range values read as ALL.
+uint8_t settingsGetBeepMode();
+void settingsSetBeepMode(uint8_t mode);
 
 // SYSTem:COMM - which physical port (UART/USB, see SETTINGS_COMM_*
 // above) the SCPI interface talks on. See serial_out.ino - switching
@@ -197,7 +227,7 @@ void settingsSetLanguage(uint8_t language);
 // statistics interval and the graph settings; SCPI keeps the immediate
 // setters above.
 void settingsSetThemeDeferred(uint8_t theme);
-void settingsSetBeepEnabledDeferred(bool enabled);
+void settingsSetBeepModeDeferred(uint8_t mode);
 void settingsSetLanguageDeferred(uint8_t language);
 
 // v22: DS3231 aging offset (SYSTem:TIME:AGINg). *isSet = false while it was
@@ -219,5 +249,20 @@ void settingsSetAlarmDeferred(uint8_t function, uint8_t mode, float low, float h
 uint8_t settingsGetAlarmSignal();
 void settingsSetAlarmSignal(uint8_t signal);
 void settingsSetAlarmSignalDeferred(uint8_t signal);
+
+// v23: SD card logging (sdlog.h): on/off and the CSV format (SETTINGS_CSV_*).
+// The plain setters (SCPI MMEMory:*) save at once, the ...Deferred() ones are
+// for the DMM settings screen. Out-of-range formats read as SEMICOLON.
+bool settingsGetSdEnabled();
+void settingsSetSdEnabled(bool enabled);
+void settingsSetSdEnabledDeferred(bool enabled);
+uint8_t settingsGetSdCsvFormat();
+void settingsSetSdCsvFormat(uint8_t format);
+void settingsSetSdCsvFormatDeferred(uint8_t format);
+
+// v24: the kind of HOLD STO held starts (SETTINGS_HOLD_*); front panel
+// deferred. Out-of-range values read as MANUAL.
+uint8_t settingsGetHoldMode();
+void settingsSetHoldModeDeferred(uint8_t mode);
 
 #endif // SETTINGS_H

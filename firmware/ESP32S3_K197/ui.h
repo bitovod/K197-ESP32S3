@@ -24,7 +24,7 @@
 #define UI_SCREEN_HELP        2 // v12: version/build preface + help_text.h, paged with REL/dB
 #define UI_SCREEN_GRAPH       3 // v14: graph of the log (RCL on the LCD screen), graph.h
 #define UI_SCREEN_GRAPH_SETUP 4 // v14: settings of the graph (RCL held on the graph)
-#define UI_SCREEN_DMM_SETUP   5 // v15: display settings - language, theme, sound (RCL held on the LCD)
+#define UI_SCREEN_DMM_SETUP   5 // v15: display settings - language, theme, sound; v23: SD card, CSV (RCL held on the LCD)
 #define UI_SCREEN_ALARM_SETUP 6 // v17: limit alarm of the function being measured (dB held on the LCD), alarm.h
 
 // Call once from setup() before the display tasks start.
@@ -77,10 +77,14 @@ uint8_t uiGetGraphSetupRow();
 // LCD. Changes apply at once and are saved deferred (settings.h).
 #define UI_DMM_SETUP_ROW_LANGUAGE 0
 #define UI_DMM_SETUP_ROW_THEME    1
-#define UI_DMM_SETUP_ROW_SOUND    2
-#define UI_DMM_SETUP_ROWS         3
+#define UI_DMM_SETUP_ROW_SOUND    2 // v23: ALL / ALARMS ONLY / OFF
+#define UI_DMM_SETUP_ROW_SD       3 // v23: SD card logging on/off (+ the state of the card)
+#define UI_DMM_SETUP_ROW_CSV      4 // v23: CSV format of the SD files
+#define UI_DMM_SETUP_ROW_HOLD     5 // v24: what STO held starts - HOLD (manual) or AUTO HOLD
+#define UI_DMM_SETUP_ROWS         6 // v23: more than FB_SETUP_ROWS - the screen scrolls
 void uiFillDmmSetupScene(FbSetupScene *scene);
 uint8_t uiGetDmmSetupRow();
+uint8_t uiGetDmmSetupTop(); // v23: first line shown
 
 // v17: the alarm settings screen (dB held CONFIG_UI_ALARM_HOLD_MS on the LCD)
 // for the function measured when it was opened (uiGetAlarmSetupFunction(),
@@ -117,6 +121,13 @@ void uiDiagClear();
 #define UI_INTERVAL_COUNT 7
 uint8_t uiGetStatsInterval();
 void uiSetStatsInterval(uint8_t index);
+
+// v25: the page of the statistics screen (FB_STATS_PAGE_*, framebuffer.h):
+// 1 AVG MAX / MED MIN, 2 SDV DIF / REL PTS, 3 SEM TRD / SDV(dgt) DIF(ppm or %).
+// An RCL click (released before CONFIG_UI_LOG_CLEAR_HOLD_MS) shows the next
+// one, cyclically; the page stays while the interval changes and while the
+// help is open, the statistics opened anew start on page 1.
+uint8_t uiGetStatsPage();
 
 // True while the UI wants to be polled again as soon as possible (a
 // statistics job is running and needs its next slice) instead of waiting

@@ -23,7 +23,8 @@ from PIL import Image
 src, out = sys.argv[1], sys.argv[2]
 names = ['lcd_grn', 'lcd_lcd1', 'lcd_ohm', 'lcd_ac', 'lcd_alarm_both', 'lcd_alarm_high', 'lcd_alarm_low', 'lcd_tag',
          'stats_grn', 'stats_lcd1', 'help_cz', 'help_en', 'setup_dmm', 'setup_alarm',
-         'graph_markers_5min', 'graph_10sec', 'graph_setup_en', 'lcd_off', 'graph_robust']
+         'graph_markers_5min', 'graph_10sec', 'graph_setup_en', 'lcd_off', 'graph_robust',
+         'lcd_hold', 'lcd_auto_hold', 'lcd_sd', 'stats_page2', 'stats_page3']
 for n in names:
     im = Image.open('%s/%s.ppm' % (src, n))
     im.resize((im.width * 2, im.height * 2), Image.NEAREST).save('%s/%s.png' % (out, n))

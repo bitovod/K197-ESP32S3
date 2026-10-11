@@ -102,9 +102,11 @@
 #include "ui.h"
 #include "alarm.h" // v17: limit alarm
 #include "marker.h" // v18: markers (TAG)
+#include "hold.h"   // v24: DATA HOLD
 #include "graph.h" // v14: GraphLive/GraphColumn must be known before Arduino's generated prototypes (graphSetLive(), ...)
 #include "debuglog.h"
 #include "power.h" // v22: PowerStats must be known before the generated prototypes
+#include "sdlog.h" // v23: SD card logging - SdlogStats/LogRecord must be known before the generated prototypes
 #include "build_info.h"
 #include <esp_system.h>
 #include "soc/soc.h"
@@ -267,6 +269,7 @@ void setup()
     beeperBegin();
     alarmBegin(); // v17: limit alarm configuration + beep timer (after settingsBegin(), beeperBegin())
     markerBegin(); // v18: marker feedback timer (double beep, TAG)
+    holdBegin();   // v24: DATA HOLD indicator tick (after markerBegin(), beeperBegin())
 
     // I2C bus for the DS3231 RTC (rtc.h/rtc.ino, wrapping the
     // third-party DS3231Centisecond library), backing
@@ -278,6 +281,7 @@ void setup()
     rtcBegin();
     rtcApplyStoredAging(); // v22: SYSTem:TIME:AGINg kept in the settings, back into the chip if it differs
     powerBegin();          // v22: light sleep while the K197 is off (power.h)
+    sdlogBegin();          // v23: SD card logging (sdlog.h) - its own task; needs settings, log, RTC, beeper, buttons
 
     // One short chirp, now that every other subsystem above is
     // initialized - the audible "boot finished, about to start

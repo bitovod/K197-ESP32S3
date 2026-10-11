@@ -180,6 +180,16 @@
 #define MC_OUT_PIN      7 // METERING COMPLETE OUTPUT
 #define EXT_TRIG_IN_PIN 8 // EXTERNAL TRIGGER INPUT
 
+// v23: SD card (sdlog.h), SDMMC host in 1-bit mode - any GPIO through the
+// GPIO matrix of the S3. GPIO1 stays free (the only free ADC1 pin, for a
+// battery voltage divider). External pull-ups 10k-47k on CMD and D0, and on
+// D3 of the socket (D3 high = SD mode; unused in 1-bit mode); 10 uF + 100 nF
+// at the socket. No card-detect pin: a missing card is found by mount
+// attempts and a periodic read of sector 0 (CONFIG_SD_PROBE_MS).
+#define SD_CLK_PIN 38
+#define SD_CMD_PIN 21
+#define SD_D0_PIN  47
+
 // METERING COMPLETE pulse length on the GPIO (microseconds). The
 // receiving system reacts to the falling edge; it must not be shorter
 // than 10 us. NOTE: a PC817-class optocoupler has switching times of
@@ -243,16 +253,16 @@
 // Current use: 26 tokens, 40 commands (MEASure:*, FETCh? added).
 // Headroom is cheap: a few bytes per entry.
 #undef SCPI_MAX_TOKENS
-#define SCPI_MAX_TOKENS 48       // distinct keywords (SYSTem, AUTO, MEASure, ...) - v22: 43 used
+#define SCPI_MAX_TOKENS 48       // distinct keywords (SYSTem, AUTO, MEASure, ...) - v25: 47 used
 #undef SCPI_MAX_COMMANDS
-#define SCPI_MAX_COMMANDS 80     // registered commands (each "X" and "X?" counts) - v22: 67 registered
+#define SCPI_MAX_COMMANDS 80     // registered commands (each "X" and "X?" counts) - v25: 76 registered
 #undef SCPI_HASH_TYPE
 #define SCPI_HASH_TYPE uint32_t  // command hash width; the default 8 bits risks two commands sharing a hash at 40+ commands
 
 #define SCPI_IDN_MANUFACTURER "KEITHLEY INSTRUMENTS INC."
 #define SCPI_IDN_MODEL        "MODEL 197"
 #define SCPI_IDN_SERIAL       "000000" // put your instrument's serial number here (reported by *IDN?)
-#define SCPI_IDN_FIRMWARE     "C2v22"
+#define SCPI_IDN_FIRMWARE     "C2v25"
 
 // ---------------------------------------------------------------
 // First-boot defaults
@@ -285,7 +295,19 @@
 #define CONFIG_DEFAULT_AUTO_INTERVAL  0
 #define CONFIG_DEFAULT_THEME          0
 #define CONFIG_DEFAULT_DEBUG_ENABLED  false
-#define CONFIG_DEFAULT_BEEP_ENABLED   true
+// v23: the sound setting has three values (SETTINGS_BEEP_* in settings.h):
+// SETTINGS_BEEP_ALL = every sound (key clicks, confirmations, markers, alarms),
+// SETTINGS_BEEP_ALARMS = only the alarms (limit alarm, SD card alarm),
+// SETTINGS_BEEP_OFF = nothing at all.
+#define CONFIG_DEFAULT_BEEP_MODE      SETTINGS_BEEP_ALL
+// v23: SD card logging on/off and the CSV format (SETTINGS_CSV_*: COMMA =
+// ',' between the fields and a decimal point, SEMICOLON = ';' and a decimal
+// comma - what a Czech Excel opens without an import dialog).
+#define CONFIG_DEFAULT_SD_ENABLED     false
+#define CONFIG_DEFAULT_SD_CSV_FORMAT  SETTINGS_CSV_SEMICOLON
+// v24: what STO held on the LCD starts (SETTINGS_HOLD_*): MANUAL = the
+// reading shown at the press stays frozen, AUTO = AUTO HOLD (hold.h).
+#define CONFIG_DEFAULT_HOLD_MODE      SETTINGS_HOLD_MANUAL
 
 // Vertical offset (pixels from the top of the panel) where drawing
 // starts - see setDisplayYOffset() (display.h) and SYSTem:YOFFset
@@ -363,7 +385,7 @@
 // help text, 6 lines per screen. On the help screen (v13): REL click =
 // previous page, dB click = next page (at the release; always a full page,
 // the last page ends with the last line of the text), REL held this long =
-// back to the start, dB held = to the end, RCL nothing, STO = back to the
+// back to the start, dB held = to the end, RCL next page (wraps, v25), STO = back to the
 // screen it was opened from. REL/dB never reach the K197 there. Logging
 // goes on meanwhile.
 #define CONFIG_UI_HELP_HOLD_MS 1000
@@ -392,6 +414,11 @@
 // Since v11 the chosen interval is persisted in EEPROM (settings.h), so this
 // is only the FIRST-BOOT default (blank or incompatible EEPROM).
 #define CONFIG_UI_STATS_DEFAULT_INTERVAL_INDEX 2
+
+// v25: the trend (TRD, statistics page 3) is given per MINUTE for the
+// intervals up to this index (0 = 5 SEC, 1 = 10 SEC, 2 = 1 MIN) and per HOUR
+// for the longer ones - the number stays readable either way.
+#define CONFIG_UI_TREND_PER_MINUTE_MAX_INTERVAL 2
 
 // Settings changed from the front panel (so far the statistics interval)
 // are written to flash only after they have stayed unchanged this long
@@ -539,6 +566,80 @@
 // FULL, markers, LOG:DATA?) can be tested overnight. The boot report and
 // SYSTem:DIAGnostic? say "TEST LIMIT" while it is on. Set back to 0 for normal use.
 #define CONFIG_DATALOG_TEST_CAPACITY 0
+
+// ---------------------------------------------------------------
+// SD card logging (sdlog.h / sdlog.ino) - new in v23
+// ---------------------------------------------------------------
+// The SD task copies the PSRAM log to CSV files on the card: a new file at
+// every change of the function, after the K197 was switched on (and after
+// the ESP32 starts) and after a card was inserted - NOT at midnight.
+// /K197/YYYY-MM/K197_YYYY-MM-DD_hh-mm-ss_FUN.csv (time of the first record).
+// The lines are collected in RAM and written + synced every
+// CONFIG_SD_FLUSH_MS - so a power loss costs at most that much of the file
+// (the PSRAM log is lost with the power anyway). Written at once (+ sync): a
+// marker (TAG), a change of the function, the K197 switched off, logging
+// switched off (then the card is unmounted and may be removed).
+#define CONFIG_SD_FLUSH_MS 30000
+// RAM buffer for the lines not written yet (internal RAM). ~45 B per record,
+// ~150 B/s at 3.3 readings/s: 30 s need ~5 kB. Written early when full.
+#define CONFIG_SD_BUFFER_BYTES 16384
+// SDMMC clock (kHz). 20000 = the default speed every card supports; lower it
+// (e.g. 10000, 4000) if long wires to the socket give errors.
+#define CONFIG_SD_FREQ_KHZ 20000
+// SD task: core 1, same priority as the comm task (below the UI and the
+// buttons). Card writes may take 100+ ms - never in the capture task.
+#define CONFIG_SD_TASK_STACK_BYTES 6144
+#define CONFIG_SD_TASK_PRIORITY    1
+#define CONFIG_SD_POLL_MS          100
+// No card / mount failed: a new mount attempt this often.
+#define CONFIG_SD_RETRY_MS 3000
+// Card mounted: a read of sector 0 this often finds a removed card even when
+// nothing is written (needs SD_MMC.readRAW(), Arduino ESP32 core 3.x; with an
+// older core a removed card is found at the next write). 0 = no probing.
+#define CONFIG_SD_PROBE_MS 2000
+// "Card full" below this many free kilobytes (checked at the mount, then
+// counted down with every write).
+#define CONFIG_SD_MIN_FREE_KB 1024
+// A record is written to the card only once this many newer ones exist (or
+// the log has been quiet for CONFIG_SD_QUIET_MS): a marker (REL + dB) goes on
+// the record SHOWN at the moment, which can be one of the last few
+// (DATALOG_APPEND_HISTORY in datalog.ino) - it must still be in RAM then.
+#define CONFIG_SD_LAG_RECORDS 8
+#define CONFIG_SD_QUIET_MS    3000
+// SD problem (no card, card full, write error) while logging is on and the
+// K197 is on: "SD!" in place of BAT blinks (CONFIG_SD_BLINK_MS on, the same
+// off), and a CONFIG_SD_ALARM_BEEP_MS beep every CONFIG_SD_ALARM_PERIOD_MS
+// (an alarm sound: silent only with the sound setting OFF). The first press
+// of any key silences the beep until the next problem; that press does
+// nothing else.
+#define CONFIG_SD_BLINK_MS        150
+#define CONFIG_SD_ALARM_BEEP_MS   500
+#define CONFIG_SD_ALARM_PERIOD_MS 5000
+
+// ---------------------------------------------------------------
+// DATA HOLD (hold.h / hold.ino) - new in v24
+// ---------------------------------------------------------------
+// STO held this long on the LCD screen starts HOLD (the kind chosen on the DMM
+// settings screen); a shorter STO opens the statistics - or, while HOLD is
+// on, only ends it. Manual HOLD freezes the reading shown at the FIRST edge
+// of the press (and puts a marker on it).
+#define CONFIG_UI_HOLD_HOLD_MS 1000
+// AUTO HOLD: a reading is stable after this many readings in a row (same
+// function, unit and decimal point) that differ by at most
+// +-CONFIG_HOLD_AUTO_TOLERANCE_COUNTS counts of the last digit (the whole run
+// spans at most twice that). Settling readings break the run.
+#define CONFIG_HOLD_AUTO_READINGS         4
+#define CONFIG_HOLD_AUTO_TOLERANCE_COUNTS 2
+// ... and it is only captured if it is not OL and at least this many counts
+// away from zero - the probes lifted off (0 V, OL) are never captured.
+#define CONFIG_HOLD_AUTO_MIN_COUNTS 100
+// A capture: a beep of this length (an ordinary sound - only with SOUND ALL),
+// a marker on the reading.
+#define CONFIG_HOLD_CAPTURE_BEEP_MS 200
+// HOLD blinks while AUTO HOLD waits for its first stable reading: this long
+// on, the same off. The indicator tick runs every CONFIG_HOLD_TICK_MS.
+#define CONFIG_HOLD_BLINK_MS 400
+#define CONFIG_HOLD_TICK_MS  100
 
 // ---------------------------------------------------------------
 // Markers (marker.h / marker.ino) - new in v18

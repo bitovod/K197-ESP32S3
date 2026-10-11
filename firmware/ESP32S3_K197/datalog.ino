@@ -398,9 +398,10 @@ static bool functionMatches(const char *functionFilter, uint8_t unit, uint16_t i
 // AC/REL/MINUS are deliberately not repeated here; they're already
 // reflected in the status character and the value's own sign.
 // Space-separated WITHIN this one CSV field (not further split into
-// separate columns) - no comma appears in any indicator name, so it
-// can't be confused with the field separator around it.
-static void printExtraIndicatorsCsv(Stream &interface, uint16_t indicatorBits)
+// separate columns) - no comma or semicolon appears in any indicator name,
+// so it can't be confused with the field separator around it.
+// v23: into a buffer (also used by the SD card log, sdlog.ino).
+size_t datalogFormatIndicators(char *buf, size_t bufSize, uint16_t indicatorBits)
 {
     static const struct
     {
@@ -415,17 +416,31 @@ static void printExtraIndicatorsCsv(Stream &interface, uint16_t indicatorBits)
         {"TAG",  DATALOG_BIT_MARKER}, // v18: a marker
         {"SETTLE", DATALOG_BIT_SETTLING}, // v20: first readings after a change of the function
     };
-    bool first = true;
+    if (bufSize == 0)
+        return 0;
+    size_t len = 0;
+    buf[0] = '\0';
     for (uint8_t i = 0; i < sizeof(kExtra) / sizeof(kExtra[0]); i++)
     {
         if (indicatorBits & kExtra[i].bit)
         {
-            if (!first)
-                interface.print(' ');
-            interface.print(kExtra[i].name);
-            first = false;
+            int n = snprintf(buf + len, bufSize - len, "%s%s", (len > 0) ? " " : "", kExtra[i].name);
+            if (n < 0 || (size_t)n >= bufSize - len)
+            {
+                buf[bufSize - 1] = '\0';
+                return bufSize - 1;
+            }
+            len += (size_t)n;
         }
     }
+    return len;
+}
+
+static void printExtraIndicatorsCsv(Stream &interface, uint16_t indicatorBits)
+{
+    char text[48];
+    datalogFormatIndicators(text, sizeof(text), indicatorBits);
+    interface.print(text);
 }
 
 uint32_t datalogCountFiltered(const char *functionFilter, long first, long last)
@@ -687,7 +702,14 @@ static void copyRecords(long first, uint32_t count, LogRecord *dst)
     xSemaphoreGive(datalogMutex);
 }
 
+static void datalogStatsStartWith(DatalogStatsJob *job, const char *functionFilter, long first, long last, bool median);
+
 void datalogStatsStart(DatalogStatsJob *job, const char *functionFilter, long first, long last)
+{
+    datalogStatsStartWith(job, functionFilter, first, last, true);
+}
+
+static void datalogStatsStartWith(DatalogStatsJob *job, const char *functionFilter, long first, long last, bool median)
 {
     memset(job, 0, sizeof(*job));
     snprintf(job->filter, sizeof(job->filter), "%s", functionFilter);
@@ -706,7 +728,7 @@ void datalogStatsStart(DatalogStatsJob *job, const char *functionFilter, long fi
     if (rangeLen > (long)DATALOG_STATS_MEDIAN_SAMPLES)
         stride = (rangeLen + (long)DATALOG_STATS_MEDIAN_SAMPLES - 1) / (long)DATALOG_STATS_MEDIAN_SAMPLES;
 
-    job->samples = datalogStatsScratch;
+    job->samples = median ? datalogStatsScratch : NULL;
     job->active = true;
     job->next = first;
     job->strideOrigin = first;
@@ -751,9 +773,33 @@ bool datalogStatsStep(DatalogStatsJob *job, uint32_t maxRecords)
             if (job->count == 0 || v > job->maximum)
                 job->maximum = v;
             job->sum += v;
+            if (job->count == 0)
+                job->ref = v;
             job->count++;
 
-            if (((job->next + (long)i - job->strideOrigin) % job->stride) == 0 && job->sampleCount < (long)DATALOG_STATS_MEDIAN_SAMPLES)
+            // v25: standard deviation (shifted sums) and trend (timestamped records only)
+            double d = v - job->ref;
+            job->sumD += d;
+            job->sumD2 += d * d;
+            if (rec.timestampSeconds2000 != 0)
+            {
+                if (!job->haveTime0)
+                {
+                    job->haveTime0 = true;
+                    job->time0Seconds = rec.timestampSeconds2000;
+                    job->time0Centis = rec.timestampCentisecond;
+                }
+                double t = (double)(int32_t)(rec.timestampSeconds2000 - job->time0Seconds) +
+                           ((double)rec.timestampCentisecond - (double)job->time0Centis) / 100.0;
+                job->countT++;
+                job->sumT += t;
+                job->sumTT += t * t;
+                job->sumTD += t * d;
+                job->sumDT += d;
+            }
+
+            if (job->samples != NULL && ((job->next + (long)i - job->strideOrigin) % job->stride) == 0 &&
+                job->sampleCount < (long)DATALOG_STATS_MEDIAN_SAMPLES)
                 job->samples[job->sampleCount++] = rec.value;
         }
         job->next += (long)n;
@@ -769,6 +815,11 @@ bool datalogStatsFinish(DatalogStatsJob *job, DatalogStats *out)
     out->average = 0;
     out->median = 0;
     out->medianValid = false;
+    out->sdev = 0;
+    out->sdevValid = false;
+    out->slopePerSecond = 0;
+    out->slopeValid = false;
+    out->slopeCount = 0;
 
     bool found = (job->count > 0);
     if (found)
@@ -777,6 +828,28 @@ bool datalogStatsFinish(DatalogStatsJob *job, DatalogStats *out)
         out->minimum = job->minimum;
         out->maximum = job->maximum;
         out->average = job->sum / (double)job->count;
+
+        // v25: sample standard deviation from the shifted sums
+        if (job->count >= 2)
+        {
+            double n = (double)job->count;
+            double variance = (job->sumD2 - job->sumD * job->sumD / n) / (n - 1.0);
+            out->sdev = (variance > 0.0) ? sqrt(variance) : 0.0;
+            out->sdevValid = true;
+        }
+        // v25: trend = least-squares slope of the value over the time
+        out->slopeCount = job->countT;
+        if (job->countT >= 3)
+        {
+            double n = (double)job->countT;
+            double sxx = job->sumTT - job->sumT * job->sumT / n;
+            if (sxx > 1e-9)
+            {
+                double sxy = job->sumTD - job->sumT * job->sumDT / n;
+                out->slopePerSecond = sxy / sxx;
+                out->slopeValid = true;
+            }
+        }
 
         if (job->samples != NULL && job->sampleCount > 0)
         {
@@ -804,6 +877,41 @@ bool datalogComputeStats(const char *functionFilter, long first, long last, Data
     datalogStatsStart(&job, functionFilter, first, last);
     datalogStatsStep(&job, 0xFFFFFFFFUL);
     return datalogStatsFinish(&job, out);
+}
+
+bool datalogComputeStatsNoMedian(const char *functionFilter, long first, long last, DatalogStats *out)
+{
+    DatalogStatsJob job;
+    datalogStatsStartWith(&job, functionFilter, first, last, false);
+    datalogStatsStep(&job, 0xFFFFFFFFUL);
+    return datalogStatsFinish(&job, out);
+}
+
+// The SCPI range numbering: unlike datalogStatsStart() (where a first record beyond the end is an empty range),
+// a first record beyond the end is clamped to the last record, as for LOG:AVERage?.
+static bool datalogStatsScpi(const char *functionFilter, long first, long last, DatalogStats *out)
+{
+    if (!resolveRange(first, last, &first, &last))
+        return false;
+    return datalogComputeStatsNoMedian(functionFilter, first, last, out);
+}
+
+void datalogPrintSdev(Stream &interface, const char *functionFilter, long first, long last)
+{
+    DatalogStats stats;
+    if (!datalogStatsScpi(functionFilter, first, last, &stats) || !stats.sdevValid)
+        return;
+    keithleyPrintScientific(interface, stats.sdev, false);
+    interface.println();
+}
+
+void datalogPrintTrend(Stream &interface, const char *functionFilter, long first, long last)
+{
+    DatalogStats stats;
+    if (!datalogStatsScpi(functionFilter, first, last, &stats) || !stats.slopeValid)
+        return;
+    keithleyPrintScientific(interface, stats.slopePerSecond * 3600.0, false);
+    interface.println();
 }
 
 long datalogFirstRecordSince(uint32_t windowSeconds, bool *usedEstimate)

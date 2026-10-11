@@ -22,6 +22,7 @@
 #include "datalog.h"
 #include "ui.h"
 #include "alarm.h"
+#include "hold.h" // v24: DATA HOLD
 #include "debuglog.h"
 #include "trigger_io.h"
 
@@ -431,6 +432,7 @@ static void dmmShowNoData(bool off)
     if (off)
     {
         uiRequestHome();     // whatever screen was open: back to the main display, which says oFF197
+        holdStop();          // v24: a held reading must not hide oFF197
         datalogNoteDmmOff(); // v22: the readings after it is switched on again settle for longer
     }
 }
@@ -465,6 +467,7 @@ void dmmCheckNoData()
         const char blank[DMM_DIGIT_COUNT] = {' ', ' ', ' ', ' ', ' ', ' '};
         uiUpdateLiveReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // not a reading -> placeholder
         alarmUpdateReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // v17: no reading -> no alarm
+        holdUpdateReading(blank, -1, 0, KEITHLEY_UNIT_NONE);  // v24: breaks an AUTO HOLD run
         datalogUpdateReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // v20: not logged, but the next readings settle again
         debugLogAlways("DMM: no valid frame for %u ms - showing %s", (unsigned)CONFIG_DMM_NO_DATA_MS, dmmOff ? "oFF197" : "Err197");
     }
@@ -770,5 +773,6 @@ void dmmApplyFrame(int byteCount)
     datalogUpdateReading(digits, dpPos, indicatorBits, unit);
     uiUpdateLiveReading(digits, dpPos, indicatorBits, unit); // v8: for the quick statistics screen, see ui.ino
     alarmUpdateReading(digits, dpPos, indicatorBits, unit);  // v17: limit alarm (triangle above the minus, beep)
+    holdUpdateReading(digits, dpPos, indicatorBits, unit);   // v24: AUTO HOLD (after the display setters and the log)
     triggerIoPulseMeteringComplete(); // v13: METERING COMPLETE OUTPUT, one pulse per complete frame
 }

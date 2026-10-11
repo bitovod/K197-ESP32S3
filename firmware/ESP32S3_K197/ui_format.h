@@ -241,4 +241,174 @@ static inline void uiFunctionFilter(char *out, size_t size, const char *prefix)
     out[length] = '\0';
 }
 
+// ---- v25: the numbers of statistics pages 2 and 3 ----
+
+// What pages 2 and 3 show instead of a number that is not available; the
+// units stay (page 2 uses UI_PLACEHOLDER like page 1).
+#define UI_PLACEHOLDER_SHORT "---"
+
+// The base unit of a unit code, without a prefix: "V", "A", the omega, "dB";
+// empty for KEITHLEY_UNIT_NONE.
+static inline void uiBaseUnitText(uint8_t unit, char *out, size_t size)
+{
+    switch (unit)
+    {
+        case KEITHLEY_UNIT_MV:
+        case KEITHLEY_UNIT_V:    snprintf(out, size, "V"); break;
+        case KEITHLEY_UNIT_UA:
+        case KEITHLEY_UNIT_MA:
+        case KEITHLEY_UNIT_A:    snprintf(out, size, "A"); break;
+        case KEITHLEY_UNIT_OHM:
+        case KEITHLEY_UNIT_KOHM:
+        case KEITHLEY_UNIT_MOHM: snprintf(out, size, "%c", FONT_CH_OHM); break;
+        case KEITHLEY_UNIT_DB:   snprintf(out, size, "dB"); break;
+        default:                 out[0] = '\0'; break;
+    }
+}
+
+// A number with 3 significant digits and no exponent: "8.23", "82.3", "823",
+// "0.123", "1500" (never fewer than 3 digits before a value gets that big,
+// at most `maxDecimals` decimals). `withSign` adds "+" to a positive value
+// (zero gets no sign). Not-a-number gives UI_PLACEHOLDER_SHORT.
+static inline void uiFormatSignificant3(char *out, size_t size, double value, bool withSign, int maxDecimals)
+{
+    if (isnan(value) || isinf(value))
+    {
+        snprintf(out, size, UI_PLACEHOLDER_SHORT);
+        return;
+    }
+    double magnitude = fabs(value);
+    int decimals = 2;
+    if (magnitude > 0.0)
+    {
+        decimals = 2 - (int)floor(log10(magnitude));
+        // 9.996 rounds to 10.0 - one decimal fewer
+        double scale = pow(10.0, decimals);
+        if (decimals > 0 && floor(magnitude * scale + 0.5) >= 1000.0)
+        {
+            decimals--;
+        }
+    }
+    if (decimals < 0)
+    {
+        decimals = 0;
+    }
+    if (decimals > maxDecimals)
+    {
+        decimals = maxDecimals;
+    }
+    double scale = pow(10.0, decimals);
+    if (floor(magnitude * scale + 0.5) == 0.0)
+    {
+        value = 0.0; // no "-0.00", no "+0.00"
+    }
+    snprintf(out, size, (withSign && value > 0.0) ? "+%.*f" : "%.*f", decimals, value);
+}
+
+// A value in base units in engineering form: 3 significant digits and the
+// unit with an SI prefix ("8.23" + "uV", "75.3" + "nV", "1.20" + "kOhm"), the
+// unit followed by `suffix` ("/h"). dB gets no prefix (a fixed number with up
+// to 5 decimals). Zero is "0.00" in the base unit. Not-a-number gives
+// UI_PLACEHOLDER_SHORT (or `placeholder`) and the base unit.
+static inline void uiFormatEngineering(char *number, size_t numberSize, char *unitOut, size_t unitSize, double baseValue,
+                                       uint8_t unit, bool withSign, const char *suffix, const char *placeholder)
+{
+    char base[4];
+    uiBaseUnitText(unit, base, sizeof(base));
+    if (isnan(baseValue) || isinf(baseValue))
+    {
+        snprintf(number, numberSize, "%s", placeholder);
+        snprintf(unitOut, unitSize, "%s%s", base, suffix);
+        return;
+    }
+    if (unit == KEITHLEY_UNIT_DB)
+    {
+        uiFormatSignificant3(number, numberSize, baseValue, withSign, 5);
+        snprintf(unitOut, unitSize, "%s%s", base, suffix);
+        return;
+    }
+    static const char prefixes[] = {'f', 'p', 'n', FONT_CH_MICRO, 'm', '\0', 'k', 'M', 'G'};
+    const int prefixZero = 5; // index of "no prefix"
+    double magnitude = fabs(baseValue);
+    int group = 0; // power of 1000
+    if (magnitude > 0.0)
+    {
+        group = (int)floor(log10(magnitude) / 3.0);
+        // 999.6 n rounds to 1000 n: 1.00 u
+        double mantissa = magnitude / pow(1000.0, group);
+        int decimals = 2 - (int)floor(log10(mantissa));
+        if (decimals < 0)
+        {
+            decimals = 0;
+        }
+        if (floor(mantissa * pow(10.0, decimals) + 0.5) >= 1000.0 * pow(10.0, decimals))
+        {
+            group++;
+        }
+    }
+    if (group < -prefixZero)
+    {
+        group = -prefixZero;
+    }
+    if (group > (int)sizeof(prefixes) - 1 - prefixZero)
+    {
+        group = (int)sizeof(prefixes) - 1 - prefixZero;
+    }
+    uiFormatSignificant3(number, numberSize, baseValue / pow(1000.0, group), withSign, 2);
+    char prefix = prefixes[group + prefixZero];
+    if (prefix == '\0')
+    {
+        snprintf(unitOut, unitSize, "%s%s", base, suffix);
+    }
+    else
+    {
+        snprintf(unitOut, unitSize, "%c%s%s", prefix, base, suffix);
+    }
+}
+
+// A ratio (a spread over |average|) in ppm below 0.1 %, in % from there on,
+// 3 significant digits: "6.67" + "ppm", "0.235" + "%". Not-a-number (no
+// average, average zero) gives the placeholder and "ppm".
+static inline void uiFormatRatio(char *number, size_t numberSize, char *unitOut, size_t unitSize, double ratio,
+                                 const char *placeholder)
+{
+    if (isnan(ratio) || isinf(ratio) || ratio < 0.0)
+    {
+        snprintf(number, numberSize, "%s", placeholder);
+        snprintf(unitOut, unitSize, "ppm");
+        return;
+    }
+    if (ratio < 1e-3)
+    {
+        uiFormatSignificant3(number, numberSize, ratio * 1e6, false, 3);
+        snprintf(unitOut, unitSize, "ppm");
+    }
+    else
+    {
+        uiFormatSignificant3(number, numberSize, ratio * 100.0, false, 3);
+        snprintf(unitOut, unitSize, "%%");
+    }
+}
+
+// A spread in digits of the last displayed place (`decimals` decimals in
+// the displayed `unit`): two decimals below 10 digits, then 3 significant
+// digits - "0.82", "12.3", "123".
+static inline void uiFormatDigits(char *out, size_t size, double baseValue, uint8_t unit, uint8_t decimals)
+{
+    if (isnan(baseValue) || isinf(baseValue))
+    {
+        snprintf(out, size, UI_PLACEHOLDER_SHORT);
+        return;
+    }
+    double digits = baseValue / uiUnitMultiplier(unit) * pow(10.0, decimals);
+    if (fabs(digits) < 9.995)
+    {
+        snprintf(out, size, "%.2f", digits);
+    }
+    else
+    {
+        uiFormatSignificant3(out, size, digits, false, 1);
+    }
+}
+
 #endif // UI_FORMAT_H

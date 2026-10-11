@@ -35,9 +35,16 @@ void beeperBegin()
     esp_timer_create(&timerArgs, &beeperOffTimer);
 }
 
+// v23: whether an ordinary sound / an alarm sound may play with the current setting.
+static bool beeperSoundAllowed(bool alarm)
+{
+    uint8_t mode = settingsGetBeepMode();
+    return mode == SETTINGS_BEEP_ALL || (alarm && mode == SETTINGS_BEEP_ALARMS);
+}
+
 void beeperBeep(uint16_t durationMs)
 {
-    if (!settingsGetBeepEnabled())
+    if (!beeperSoundAllowed(false))
         return;
     if (beeperAsyncActive)
         return; // a long beep is sounding - it already tells the person something happened
@@ -50,10 +57,9 @@ void beeperBeep(uint16_t durationMs)
     }
 }
 
-void beeperBeepAsync(uint16_t durationMs)
+// The asynchronous beep itself, after the setting was checked.
+static void beeperStartAsync(uint16_t durationMs)
 {
-    if (!settingsGetBeepEnabled())
-        return;
     if (beeperOffTimer == NULL)
         return; // beeperBegin() not called / timer creation failed
 
@@ -64,6 +70,22 @@ void beeperBeepAsync(uint16_t durationMs)
     beeperAsyncActive = true;
     digitalWrite(BEEPER_PIN, HIGH);
     esp_timer_start_once(beeperOffTimer, (uint64_t)durationMs * 1000ULL);
+}
+
+void beeperBeepAsync(uint16_t durationMs)
+{
+    if (beeperSoundAllowed(false))
+    {
+        beeperStartAsync(durationMs);
+    }
+}
+
+void beeperAlarmAsync(uint16_t durationMs)
+{
+    if (beeperSoundAllowed(true))
+    {
+        beeperStartAsync(durationMs);
+    }
 }
 
 void beeperPlayStartupChirp()

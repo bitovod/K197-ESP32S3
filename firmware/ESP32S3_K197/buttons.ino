@@ -73,14 +73,17 @@ struct ButtonState
     // v18: REL and dB were held together during this press (a marker chord):
     // its release sends no pulse. Button task only.
     bool chord;
+    // v23: this press was swallowed (buttonsArmSwallow()): no events, no pulse,
+    // not reported as held. Button task writes, buttonsIsHeld() reads.
+    volatile bool swallowed;
 };
 
 static ButtonState relButton = {BTN_REL_PIN, REL_OUT_PIN, "REL", NULL, false, 0, false, false, 0, 0, false,
-                                 CONFIG_BUTTON_REL_PULSE_ON_RELEASE != 0, false, CONFIG_UI_HELP_HOLD_MS, false};
+                                 CONFIG_BUTTON_REL_PULSE_ON_RELEASE != 0, false, CONFIG_UI_HELP_HOLD_MS, false, false};
 static ButtonState dbButton = {BTN_DB_PIN, DB_OUT_PIN, "dB", NULL, false, 0, false, false, 0, 0, false,
-                                CONFIG_BUTTON_DB_PULSE_ON_RELEASE != 0, false, CONFIG_UI_ALARM_HOLD_MS, false};
-static ButtonState stoButton = {BTN_STO_PIN, 0, "STO", NULL, false, 0, false, false, 0, 0, false, false, false, 0, false};
-static ButtonState rclButton = {BTN_RCL_PIN, 0, "RCL", NULL, false, 0, false, false, 0, 0, false, false, false, 0, false};
+                                CONFIG_BUTTON_DB_PULSE_ON_RELEASE != 0, false, CONFIG_UI_ALARM_HOLD_MS, false, false};
+static ButtonState stoButton = {BTN_STO_PIN, 0, "STO", NULL, false, 0, false, false, 0, 0, false, false, false, 0, false, false};
+static ButtonState rclButton = {BTN_RCL_PIN, 0, "RCL", NULL, false, 0, false, false, 0, 0, false, false, false, 0, false, false};
 
 // The button task (buttonsTaskEntry() below) and the helper that wakes it
 // from the interrupt handler.
@@ -118,6 +121,10 @@ static volatile uint32_t chordStartMs = 0;
 // Whether a REL/dB press may start the output pulse. Read from the
 // GPIO interrupt handler, hence volatile.
 static volatile bool relDbOutputsEnabled = true;
+
+// v23: the next confirmed press is swallowed (buttonsArmSwallow()).
+static volatile bool swallowArmed = false;
+static volatile uint32_t swallowedPresses = 0;
 
 // Iterated by buttonsBegin() and the button task - the
 // interrupt handlers themselves are each wired to one specific
@@ -293,6 +300,22 @@ static void confirmButtonIfSettled(void *arg, uint32_t nowMs)
     if (level)
     {
         btn->pressStartMs = btn->candidateFirstMs;
+        if (swallowArmed)
+        {
+            // v23: this press only silences the SD card alarm - no event, no click, no pulse at the release.
+            // A pulse already kicked at the first edge (a button without pulse-on-release) still gets its end.
+            swallowArmed = false;
+            btn->swallowed = true;
+            btn->pulseArmed = false;
+            if (btn->outputPin && btn->pulseKicked)
+            {
+                esp_timer_start_once(btn->pulseTimer, (uint64_t)CONFIG_BUTTON_PULSE_MS * 1000ULL);
+            }
+            swallowedPresses = swallowedPresses + 1;
+            displayWakeUi();
+            debugLogf("BTN %s pressed: swallowed (silences the SD alarm)", btn->name);
+            return;
+        }
         pressEvents = (uint8_t)(pressEvents | (1u << buttonIndexOf(arg)));
         pressStartTimes[buttonIndexOf(arg)] = btn->pressStartMs;
         displayWakeUi();
@@ -320,7 +343,7 @@ static void confirmButtonIfSettled(void *arg, uint32_t nowMs)
         // v18: REL pressed while dB is held, or the other way round = the marker chord. Neither release
         // then sends its pulse; the UI gets one chord event, timed at the first edge of the EARLIER press.
         ButtonState *other = (btn == &relButton) ? &dbButton : ((btn == &dbButton) ? &relButton : NULL);
-        if (other != NULL && other->confirmedPressed)
+        if (other != NULL && other->confirmedPressed && !other->swallowed)
         {
             btn->chord = true;
             other->chord = true;
@@ -336,6 +359,16 @@ static void confirmButtonIfSettled(void *arg, uint32_t nowMs)
     }
     else
     {
+        if (btn->swallowed)
+        {
+            // v23: the release of a swallowed press - nothing to report
+            btn->swallowed = false;
+            btn->pulseArmed = false;
+            btn->pulseKicked = false;
+            btn->chord = false;
+            debugLogf("BTN %s released (swallowed press)", btn->name);
+            return;
+        }
         uint32_t durationMs = btn->candidateFirstMs - btn->pressStartMs;
         if (durationMs >= CONFIG_BUTTON_LONG_PRESS_MS)
             longReleaseEvents = (uint8_t)(longReleaseEvents | (1u << buttonIndexOf(arg)));
@@ -446,5 +479,15 @@ bool buttonsIsHeld(uint8_t button)
     {
         return false;
     }
-    return allButtons[button]->confirmedPressed;
+    return allButtons[button]->confirmedPressed && !allButtons[button]->swallowed;
+}
+
+void buttonsArmSwallow(bool armed)
+{
+    swallowArmed = armed;
+}
+
+uint32_t buttonsSwallowedCount()
+{
+    return swallowedPresses;
 }

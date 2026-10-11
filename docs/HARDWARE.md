@@ -45,8 +45,9 @@ at a high voltage, all of that is at the same voltage.
 | 48 | beeper (shared with the on-board LED) |
 | 7 | METERING COMPLETE output (pulse after every reading) |
 | 8 | EXTERNAL TRIGGER input (falling edge, internal pull-up) |
+| 38, 21, 47 | SD card (SDMMC 1-bit): CLK, CMD, D0 |
 
-Pins that are probably still free: **1, 21, 38, 47**; 9 if the TFT RST stays unconnected; 43/44 (UART0) if the
+Pins that are probably still free: **1** (the only free ADC1 pin, kept for a battery voltage divider); 9 if the TFT RST stays unconnected; 43/44 (UART0) if the
 board brings them out. Avoid the strapping pins 0, 3, 45, 46, the USB pins 19/20, the flash pins 26–32, and on
 S3R8 modules the octal PSRAM pins 33–37.
 
@@ -74,11 +75,14 @@ The solution being built: a separate 5 V supply from the spare winding of the K1
 the GPIB option. It uses the original GPIB supply design: bridge rectifier, 250 µF / 25 V, 7805 on a heat sink,
 2.2 mF + 2 × 100 nF. Its ground is tied to the K197 logic ground at one point.
 
-## Planned: SD card
+## SD card
 
-SDMMC in 1-bit mode needs 3 GPIOs (CLK, CMD, D0) plus an optional card-detect pin. It needs pull-ups of 10 k on
-CMD, D0 and D3, and 10 … 47 µF close to the socket. Use a plain socket or breakout: the usual "micro SD modules"
-with a level shifter work in SPI mode only. Keep the cable short.
+The firmware (v23+) uses SDMMC in 1-bit mode: CLK 38, CMD 21, D0 47 (`SD_*_PIN` in `config.h`, any GPIO works
+through the matrix), 20 MHz (`CONFIG_SD_FREQ_KHZ`). There is no card-detect pin: a removed card is found by a read
+every 2 s. Pull-ups of 10 … 47 k on CMD, D0 and D3 (D3 high = SD mode), 10 µF + 100 nF close to the socket (write
+current peaks of 100 … 200 mA). Use a plain socket or breakout: the usual "micro SD modules" with a level shifter
+work in SPI mode only. Keep the cable short. FAT32 cards; the 3.3 V of the card must be on the same supply as the
+ESP32. The slot is still being built into the prototype.
 
 ---
 
@@ -124,8 +128,9 @@ projektu, je vztažená ke **vstupu LO**. Když přístroj měří s LO na vysok
 | 48 | bzučák (sdílený s LED na desce) |
 | 7 | výstup METERING COMPLETE (puls po každém měření) |
 | 8 | vstup EXTERNAL TRIGGER (sestupná hrana, interní pull-up) |
+| 38, 21, 47 | SD karta (SDMMC 1-bit): CLK, CMD, D0 |
 
-Pravděpodobně ještě volné piny: **1, 21, 38, 47**; pin 9, pokud RST displeje zůstane nezapojený; 43/44 (UART0),
+Pravděpodobně ještě volné piny: **1** (jediný volný pin ADC1, rezervovaný pro dělič napětí baterie); pin 9, pokud RST displeje zůstane nezapojený; 43/44 (UART0),
 pokud je deska vyvádí. Nepoužívat strapping piny 0, 3, 45, 46, piny USB 19/20, piny flash 26–32 a u modulů S3R8
 piny oktální PSRAM 33–37.
 
@@ -151,8 +156,11 @@ multimetru). Řešení ve stavbě: samostatných 5 V z rezervního vinutí trans
 desku GPIB. Používá původní zapojení napájení GPIB: usměrňovací můstek, 250 µF / 25 V, 7805 na chladiči,
 2,2 mF + 2 × 100 nF. Zem je spojená s logickou zemí K197 v jednom bodě.
 
-## V plánu: SD karta
+## SD karta
 
-SDMMC v jednobitovém režimu potřebuje 3 GPIO (CLK, CMD, D0) a volitelně pin pro detekci karty. Potřebuje pull-upy
-10 k na CMD, D0 a D3 a 10 až 47 µF u slotu. Použijte holý slot nebo breakout: běžné „micro SD moduly“ s převodníkem
-úrovní fungují jen v režimu SPI. Kabel držte krátký.
+Firmware (od v23) používá SDMMC v jednobitovém režimu: CLK 38, CMD 21, D0 47 (`SD_*_PIN` v `config.h`, přes matici
+jde použít libovolné GPIO), 20 MHz (`CONFIG_SD_FREQ_KHZ`). Pin pro detekci karty není: vyjmutou kartu odhalí čtení
+každé 2 s. Pull-upy 10 až 47 k na CMD, D0 a D3 (D3 v jedničce = režim SD), 10 µF + 100 nF u slotu (špičky proudu
+při zápisu 100 až 200 mA). Použijte holý slot nebo breakout: běžné „micro SD moduly“ s převodníkem úrovní fungují
+jen v režimu SPI. Kabel držte krátký. Karty FAT32; 3,3 V pro kartu musí být na stejném napájení jako ESP32. Slot se
+do prototypu teprve zabudovává.

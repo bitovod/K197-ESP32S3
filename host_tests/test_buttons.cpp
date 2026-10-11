@@ -278,6 +278,39 @@ int main()
         sleepUs((CONFIG_BUTTON_PULSE_MS + 60) * 1000);
     }
 
+    // 8. v23: a swallowed press (the SD alarm's silencing key): no event, no click, no pulse, not held, no chord;
+    //    only the first press after arming; disarming works
+    {
+        uint32_t ms = 0;
+        while (buttonsTakeChord(&ms)) {}
+        int clicks = gClicks;
+        int highDb = gpioOutHighCount[DB_OUT_PIN];
+        uint32_t swallowed = buttonsSwallowedCount();
+        buttonsArmSwallow(true);
+        edge(BUTTON_DB, true);
+        CHECK(waitPress(BUTTON_DB, 80) < 0, "swallowed: no press event");
+        CHECK(buttonsSwallowedCount() == swallowed + 1 && !buttonsIsHeld(BUTTON_DB), "counted, not reported as held");
+        edge(BUTTON_REL, true); // REL while the swallowed dB is held: an ordinary press, NOT a chord
+        CHECK(waitPress(BUTTON_REL) >= 0, "the next key is an ordinary press");
+        sleepUs(5000);
+        CHECK(!buttonsTakeChord(&ms), "no chord with a swallowed key");
+        edge(BUTTON_DB, false);
+        CHECK(waitShort(BUTTON_DB, 80) < 0 && !buttonsTakeLongRelease(BUTTON_DB), "swallowed: no release event");
+        edge(BUTTON_REL, false); waitShort(BUTTON_REL);
+        sleepUs((CONFIG_BUTTON_PULSE_MS + 60) * 1000);
+        CHECK(gpioOutHighCount[DB_OUT_PIN] == highDb, "swallowed dB: no pulse to the K197");
+        CHECK(gClicks == clicks + 1, "only the ordinary REL press clicked");
+        edge(BUTTON_STO, true);
+        CHECK(waitPress(BUTTON_STO) >= 0, "disarmed by itself after one press");
+        edge(BUTTON_STO, false); waitShort(BUTTON_STO);
+        buttonsArmSwallow(true);
+        buttonsArmSwallow(false);
+        edge(BUTTON_RCL, true);
+        CHECK(waitPress(BUTTON_RCL) >= 0 && buttonsSwallowedCount() == swallowed + 1, "disarmed: an ordinary press");
+        edge(BUTTON_RCL, false); waitShort(BUTTON_RCL);
+        printf("8. v23 swallowed press: no event, no click, no pulse, no chord\n");
+    }
+
     printf(failures ? "FAILURES: %d\n" : "ALL OK\n", failures);
     fflush(stdout);
     std::_Exit(failures != 0);

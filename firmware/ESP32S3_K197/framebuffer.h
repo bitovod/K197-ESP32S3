@@ -50,6 +50,8 @@
 #include "font_data.h"
 #include "font_pixel.h"
 #include "tag_shape.h" // v18: "TAG" in place of REM
+#include "sd_shape.h"  // v23: "SD!" in place of BAT
+#include "hold_shape.h" // v24: "HOLD" / "AUTO" in place of STO / RCL
 #include "config.h"
 
 #define FB_WIDTH            KEITHLEY_SCREEN_WIDTH
@@ -114,7 +116,13 @@ struct FbLcdScene
     uint8_t unit;                           // KEITHLEY_UNIT_*, KEITHLEY_UNIT_NONE = hidden
     uint8_t alarm = FB_ALARM_NONE;          // v17: the limit alarm's triangle above the minus, FB_ALARM_*
     bool tagLit = false;                    // v18: "TAG" (a marker was just set) lit instead of ghost
+    bool sdLit = false;                     // v23: "SD!" (SD card problem, blinking phase) lit instead of ghost
+    uint8_t hold = 0;                       // v24: FB_HOLD_* bits - "HOLD" / "AUTO" lit instead of ghost
 };
+
+// v24: FbLcdScene.hold - which of the two DATA HOLD words in place of STO / RCL are lit.
+#define FB_HOLD_LIT      0x01 // "HOLD" (place of STO)
+#define FB_HOLD_AUTO_LIT 0x02 // "AUTO" (place of RCL)
 
 // Everything the quick statistics screen needs to draw one picture:
 // pre-formatted text, so the pixel code never deals with numbers, units
@@ -132,7 +140,28 @@ struct FbStatsScene
     char unit[8];                     // shared by all five numbers, e.g. "mV"
     char interval[12];                // the statistics interval, e.g. "15 MIN" (at most 6 characters are laid out)
     char dateTime[40];                // e.g. "2026-10-06  14:03:07", empty = nothing shown (size: room for any value the formatter could be given)
+    // v25: which page of the statistics (FB_STATS_PAGE_*) and the texts of pages 2 and 3 - the top line is the
+    // same on every page. Units of page 2 are drawn in the number's font, units of page 3 in the legend font.
+    uint8_t page;
+    char sdev[FB_STATS_TEXT_LEN];       // page 2 SDV: standard deviation, 3 significant digits ("8.23")
+    char sdevUnit[8];                   // ... with its prefix ("uV" with the micro sign)
+    char rel[FB_STATS_TEXT_LEN];        // page 2 REL: SDV / |AVG| ("6.67")
+    char relUnit[8];                    // ... "ppm" or "%"
+    char dif[FB_STATS_TEXT_LEN];        // page 2 DIF: MAX - MIN like the numbers of page 1, unit = `unit`
+    char pts[FB_STATS_TEXT_LEN];        // page 2 PTS: records in the interval ("11946"), unit "n"
+    char sem[FB_STATS_TEXT_LEN];        // page 3 SEM: standard error of the mean, SDV / sqrt(PTS) ("75.3")
+    char semUnit[8];                    // ... "nV"
+    char trend[FB_STATS_TEXT_LEN];      // page 3 TRD: trend with a sign ("+12.3")
+    char trendUnit[8];                  // ... "uV/h" or "uV/m"
+    char sdevDigits[FB_STATS_TEXT_LEN]; // page 3 SDV: in digits of the last place ("0.82"), unit "dgt"
+    char difRel[FB_STATS_TEXT_LEN];     // page 3 DIF: (MAX - MIN) / |AVG| ("235")
+    char difRelUnit[8];                 // ... "ppm" or "%"
 };
+
+#define FB_STATS_PAGE_MAIN   0 // AVG MAX / MED MIN
+#define FB_STATS_PAGE_SPREAD 1 // SDV DIF / REL PTS
+#define FB_STATS_PAGE_TREND  2 // SEM TRD / SDV(dgt) DIF(rel)
+#define FB_STATS_PAGE_COUNT  3
 
 // One complete frame travelling from the render task to the blit
 // task: the pixels, the palette they were rendered with (so a theme
@@ -537,6 +566,25 @@ static inline void fbComposeLcd(uint8_t *fb, const FbLcdScene &scene)
                        KEITHLEY_TAG_H, scene.tagLit ? FB_INK_INDICATOR : FB_INK_GHOST);
             continue;
         }
+        if ((i == KEITHLEY_IND_STO || i == KEITHLEY_IND_RCL) && !on)
+        {
+            // v24: the K197's own data store is never used here (its keys are not wired), so STO and RCL are
+            // free: unless the K197 lights them (self-test), "HOLD" and "AUTO" stand there, squeezed to the same
+            // width - ghost, lit while DATA HOLD shows a held reading (hold.h).
+            bool isHold = (i == KEITHLEY_IND_STO);
+            uint8_t bit = isHold ? FB_HOLD_LIT : FB_HOLD_AUTO_LIT;
+            fbDrawMask(fb, isHold ? keithley_hold_mask : keithley_auto_mask, x, y, KEITHLEY_HOLD_W, KEITHLEY_HOLD_H,
+                       (scene.hold & bit) ? FB_INK_INDICATOR : FB_INK_GHOST);
+            continue;
+        }
+        if (i == KEITHLEY_IND_BAT && !on)
+        {
+            // v23: no battery option here either, so BAT is free: unless the K197 lights it (self-test), "SD!"
+            // stands there - ghost, lit (in the blinking phase) while the SD card has a problem (sdlog.h).
+            fbDrawMask(fb, keithley_sd_mask, (int16_t)(x + (w - KEITHLEY_SD_W) / 2), y, KEITHLEY_SD_W,
+                       KEITHLEY_SD_H, scene.sdLit ? FB_INK_INDICATOR : FB_INK_GHOST);
+            continue;
+        }
         // Off: ghost. On: the dimmer indicator color, except AC,
         // which uses the full digit brightness (same rule as the old
         // drawIndicator()).
@@ -859,10 +907,27 @@ static inline FbStatsCell fbStatsCellLayout(bool rightColumn, const char *number
     return cell;
 }
 
+// v25: the right legends (MAX / MIN and those of pages 2 and 3) start at ONE
+// fixed place, whatever the unit: where a two-character unit ("mV", the widest
+// the meter has - FB_STATS_UNIT_CHARS) puts them. A one-character unit ("V")
+// leaves a wider gap between the legend and the number instead of moving the
+// legend (the legends must not jump when the unit or the page
+// changes). Only the numbers and units follow the unit, flush right.
+static inline int16_t fbStatsRightLegendX()
+{
+    int16_t legendWidth = fbTextWidth(FONT_LEGEND, "MAX");
+    return (int16_t)(FB_WIDTH - (legendWidth + FB_STATS_GAP_LEGEND + FB_STATS_NUMBER_CHARS * FONT_STAT.advance +
+                                 FB_STATS_GAP_UNIT + FB_STATS_UNIT_CHARS * FONT_STAT.advance));
+}
+
 static inline void fbDrawStatsCell(uint8_t *fb, bool rightColumn, int16_t baselineY,
                                    const char *legend, const char *number, const char *unit)
 {
     FbStatsCell cell = fbStatsCellLayout(rightColumn, number, unit);
+    if (rightColumn && cell.font == &FONT_STAT && cell.x > fbStatsRightLegendX())
+    {
+        cell.x = fbStatsRightLegendX(); // v25: fixed place of the right legends
+    }
     fbDrawText(fb, FONT_LEGEND, cell.x, baselineY, legend, FB_INK_INDICATOR);
     fbDrawTextRight(fb, *cell.font, cell.numberRight, baselineY, number, FB_INK_BRIGHT);
     fbDrawText(fb, *cell.font, cell.unitX, baselineY, unit, FB_INK_BRIGHT);
@@ -887,6 +952,73 @@ static inline void fbDrawIntervalSelector(uint8_t *fb, int16_t baselineY, const 
                    FB_STATS_ARROW_HEIGHT, false, FB_INK_INDICATOR);
 }
 
+// v25 page 2: a cell like those of page 1 (legend in FONT_LEGEND, number and
+// unit in FONT_STAT, 8 character number field) but never shrunk to half the
+// screen: the left cell starts at the left edge, the right one ends at the
+// right edge with its unit, so the numbers end where they end on page 1.
+static inline void fbDrawStatsCellWide(uint8_t *fb, bool rightColumn, int16_t baselineY,
+                                       const char *legend, const char *number, const char *unit)
+{
+    const FontDef &font = FONT_STAT;
+    int16_t legendWidth = fbTextWidth(FONT_LEGEND, "MAX");
+    int16_t unitWidth = fbTextWidth(font, unit);
+    int16_t width = (int16_t)(legendWidth + FB_STATS_GAP_LEGEND + FB_STATS_NUMBER_CHARS * font.advance +
+                              FB_STATS_GAP_UNIT + unitWidth);
+    int16_t x = rightColumn ? (int16_t)(FB_WIDTH - width) : 0;
+    int16_t unitX = (int16_t)(x + width - unitWidth);
+    if (rightColumn && x > fbStatsRightLegendX())
+    {
+        x = fbStatsRightLegendX(); // the fixed place of the right legends
+    }
+    fbDrawText(fb, FONT_LEGEND, x, baselineY, legend, FB_INK_INDICATOR);
+    fbDrawTextRight(fb, font, (int16_t)(unitX - FB_STATS_GAP_UNIT), baselineY, number, FB_INK_BRIGHT);
+    fbDrawText(fb, font, unitX, baselineY, unit, FB_INK_BRIGHT);
+}
+
+// v25 page 2, right column: laid out for `layoutUnit` (the measured unit, as
+// DIF and page 1's MAX / MIN) - legend, number edge and unit position all line
+// up with DIF; `unit` (PTS: "n") is drawn where that unit starts.
+static inline void fbDrawStatsCellWideAs(uint8_t *fb, int16_t baselineY, const char *legend, const char *number,
+                                         const char *unit, const char *layoutUnit)
+{
+    const FontDef &font = FONT_STAT;
+    int16_t legendWidth = fbTextWidth(FONT_LEGEND, "MAX");
+    int16_t layoutWidth = fbTextWidth(font, layoutUnit);
+    int16_t width = (int16_t)(legendWidth + FB_STATS_GAP_LEGEND + FB_STATS_NUMBER_CHARS * font.advance +
+                              FB_STATS_GAP_UNIT + layoutWidth);
+    int16_t x = (int16_t)(FB_WIDTH - width);
+    if (x > fbStatsRightLegendX())
+    {
+        x = fbStatsRightLegendX(); // the fixed place of the right legends
+    }
+    int16_t unitX = (int16_t)(FB_WIDTH - layoutWidth);
+    fbDrawText(fb, FONT_LEGEND, x, baselineY, legend, FB_INK_INDICATOR);
+    fbDrawTextRight(fb, font, (int16_t)(unitX - FB_STATS_GAP_UNIT), baselineY, number, FB_INK_BRIGHT);
+    fbDrawText(fb, font, unitX, baselineY, unit, FB_INK_BRIGHT);
+}
+
+// v25 page 3: units in the (smaller) legend font. The legends start where
+// those of page 1 start (rightLegendX = fbStatsRightLegendX(), fixed); the left numbers end
+// where those of page 1 end, the right ones before a unit field of
+// FB_STATS_P3_UNIT_CHARS legend characters at the right edge.
+#define FB_STATS_P3_UNIT_CHARS 4 // "uV/h"
+#define FB_STATS_P3_GAP_UNIT   3 // number -> unit
+
+static inline void fbDrawStatsCellAligned(uint8_t *fb, bool rightColumn, int16_t rightLegendX, int16_t baselineY,
+                                          const char *legend, const char *number, const char *unit)
+{
+    const FontDef &font = FONT_STAT;
+    int16_t legendWidth = fbTextWidth(FONT_LEGEND, "MAX");
+    int16_t numberField = (int16_t)(legendWidth + FB_STATS_GAP_LEGEND + FB_STATS_NUMBER_CHARS * font.advance);
+    int16_t x = rightColumn ? rightLegendX : 0;
+    int16_t numberRight = rightColumn
+                              ? (int16_t)(FB_WIDTH - FB_STATS_P3_UNIT_CHARS * FONT_LEGEND.advance - FB_STATS_P3_GAP_UNIT)
+                              : numberField;
+    fbDrawText(fb, FONT_LEGEND, x, baselineY, legend, FB_INK_INDICATOR);
+    fbDrawTextRight(fb, font, numberRight, baselineY, number, FB_INK_BRIGHT);
+    fbDrawText(fb, FONT_LEGEND, (int16_t)(numberRight + FB_STATS_P3_GAP_UNIT), baselineY, unit, FB_INK_BRIGHT);
+}
+
 static inline void fbComposeStats(uint8_t *fb, const FbStatsScene &scene)
 {
     fbFill(fb, 0);
@@ -899,10 +1031,28 @@ static inline void fbComposeStats(uint8_t *fb, const FbStatsScene &scene)
     fbDrawText(fb, FONT_LIVE, liveUnitX, rows.baselineTop, scene.unit, FB_INK_BRIGHT);
     fbDrawTextRight(fb, FONT_LIVE, (int16_t)(liveUnitX - FB_STATS_GAP_UNIT), rows.baselineTop, scene.live, FB_INK_BRIGHT);
 
-    fbDrawStatsCell(fb, false, rows.baselineRow1, "AVG", scene.average, scene.unit);
-    fbDrawStatsCell(fb, true, rows.baselineRow1, "MAX", scene.maximum, scene.unit);
-    fbDrawStatsCell(fb, false, rows.baselineRow2, "MED", scene.median, scene.unit);
-    fbDrawStatsCell(fb, true, rows.baselineRow2, "MIN", scene.minimum, scene.unit);
+    if (scene.page == FB_STATS_PAGE_SPREAD)
+    {
+        fbDrawStatsCellWide(fb, false, rows.baselineRow1, "SDV", scene.sdev, scene.sdevUnit);
+        fbDrawStatsCellWide(fb, true, rows.baselineRow1, "DIF", scene.dif, scene.unit);
+        fbDrawStatsCellWide(fb, false, rows.baselineRow2, "REL", scene.rel, scene.relUnit);
+        fbDrawStatsCellWideAs(fb, rows.baselineRow2, "PTS", scene.pts, "n", scene.unit); // lines up with DIF
+    }
+    else if (scene.page == FB_STATS_PAGE_TREND)
+    {
+        int16_t rightX = fbStatsRightLegendX(); // where MAX / MIN start on page 1
+        fbDrawStatsCellAligned(fb, false, rightX, rows.baselineRow1, "SEM", scene.sem, scene.semUnit);
+        fbDrawStatsCellAligned(fb, true, rightX, rows.baselineRow1, "TRD", scene.trend, scene.trendUnit);
+        fbDrawStatsCellAligned(fb, false, rightX, rows.baselineRow2, "SDV", scene.sdevDigits, "dgt");
+        fbDrawStatsCellAligned(fb, true, rightX, rows.baselineRow2, "DIF", scene.difRel, scene.difRelUnit);
+    }
+    else
+    {
+        fbDrawStatsCell(fb, false, rows.baselineRow1, "AVG", scene.average, scene.unit);
+        fbDrawStatsCell(fb, true, rows.baselineRow1, "MAX", scene.maximum, scene.unit);
+        fbDrawStatsCell(fb, false, rows.baselineRow2, "MED", scene.median, scene.unit);
+        fbDrawStatsCell(fb, true, rows.baselineRow2, "MIN", scene.minimum, scene.unit);
+    }
 }
 
 // ---------------------------------------------------------------
@@ -1116,7 +1266,55 @@ struct FbSetupScene
     char keys[FB_HELP_LINE_CHARS];
     uint8_t cursorRow; // 0..rowCount-1
     uint8_t rowCount;  // lines with a setting (1..FB_SETUP_ROWS); the lines below stay empty
+    // v23: a list longer than FB_SETUP_ROWS scrolls - the screen shows a window of it; these draw a small
+    // triangle at the right end of the first (pointing up) / last (pointing down) line when more lines are
+    // above / below the window.
+    bool moreAbove;
+    bool moreBelow;
 };
+
+// v23: a small triangle pointing up or down - the scroll marks of the settings screens. Same supersampled
+// coverage as fbDrawTriangle(); x is the left edge, cy the vertical centre, `width` along the base,
+// `height` from the base to the tip.
+static inline void fbDrawTriangleVertical(uint8_t *fb, int16_t x, float cy, uint8_t width, uint8_t height,
+                                          bool pointsUp, uint8_t ink)
+{
+    const uint8_t samples = 8;
+    float top = cy - height / 2.0f;
+    for (int16_t py = (int16_t)floorf(top); py <= (int16_t)ceilf(top + height); py++)
+    {
+        for (int16_t px = x; px <= x + width; px++)
+        {
+            uint16_t hits = 0;
+            for (uint8_t sy = 0; sy < samples; sy++)
+            {
+                for (uint8_t sx = 0; sx < samples; sx++)
+                {
+                    float fx = (px - x) + (sx + 0.5f) / samples;  // 0 .. width
+                    float fy = (py - top) + (sy + 0.5f) / samples; // 0 .. height
+                    if (fx < 0.0f || fx > width || fy < 0.0f || fy > height)
+                    {
+                        continue;
+                    }
+                    float t = pointsUp ? (fy / height) : (1.0f - fy / height); // 0 at the tip, 1 at the base
+                    if (fabsf(fx - width / 2.0f) <= t * width / 2.0f)
+                    {
+                        hits++;
+                    }
+                }
+            }
+            if (hits == 0 || px < 0 || px >= FB_WIDTH || py < 0 || py >= FB_HEIGHT)
+            {
+                continue;
+            }
+            uint8_t coverage = (uint8_t)((hits * 255u + (samples * samples) / 2) / (samples * samples));
+            fbPut(fb, px, py, fbRampIndex(ink, coverage));
+        }
+    }
+}
+
+#define FB_SETUP_SCROLL_W 9 // scroll mark: width of the base, pixels
+#define FB_SETUP_SCROLL_H 6 // ... and its height
 
 static inline void fbComposeSetup(uint8_t *fb, const FbSetupScene &scene)
 {
@@ -1139,6 +1337,19 @@ static inline void fbComposeSetup(uint8_t *fb, const FbSetupScene &scene)
             fbDrawTriangle(fb, (int16_t)(valueX + fbTextWidth(FONT_TINY, scene.values[r]) + FB_SETUP_ARROW_GAP), cy,
                            FB_STATS_ARROW_DEPTH, FB_STATS_ARROW_HEIGHT, false, FB_INK_INDICATOR);
         }
+    }
+    // v23: scroll marks at the right end of the first / last visible line
+    if (scene.moreAbove)
+    {
+        float cy = fbHelpBaseline(1) - FONT_TINY.digitHeight / 2.0f;
+        fbDrawTriangleVertical(fb, (int16_t)(FB_WIDTH - FB_SETUP_SCROLL_W - 2), cy, FB_SETUP_SCROLL_W, FB_SETUP_SCROLL_H,
+                               true, FB_INK_INDICATOR);
+    }
+    if (scene.moreBelow)
+    {
+        float cy = fbHelpBaseline(FB_SETUP_ROWS) - FONT_TINY.digitHeight / 2.0f;
+        fbDrawTriangleVertical(fb, (int16_t)(FB_WIDTH - FB_SETUP_SCROLL_W - 2), cy, FB_SETUP_SCROLL_W, FB_SETUP_SCROLL_H,
+                               false, FB_INK_INDICATOR);
     }
     // the key hint flush right, so it does not read as one more setting (a separator line above it was tried
     // and dropped again: on the real panel it gave odd effects)

@@ -15,6 +15,9 @@
 #include "buttons.h"
 #include "debuglog.h"
 #include "help_text.h"
+#include "settings.h" // v23: SETTINGS_BEEP_*, SETTINGS_CSV_*
+#include "sdlog.h"    // v23: SDLOG_STATE_*
+#include "hold.h"     // v24: HOLD_STATE_*
 
 // A small step and no time budget, so that a long statistics job takes several UI polls on a fast PC too.
 #undef CONFIG_UI_STATS_STEP_RECORDS
@@ -48,9 +51,39 @@ static uint8_t gTheme = 1, gThemeApplied = 1;
 uint8_t settingsGetTheme() { return gTheme; }
 void settingsSetThemeDeferred(uint8_t t) { gTheme = t; }
 void setTheme(uint8_t t) { gThemeApplied = t; }
-static bool gBeep = true;
-bool settingsGetBeepEnabled() { return gBeep; }
-void settingsSetBeepEnabledDeferred(bool e) { gBeep = e; }
+static uint8_t gBeepMode = SETTINGS_BEEP_ALL; // v23: three values
+uint8_t settingsGetBeepMode() { return gBeepMode; }
+void settingsSetBeepModeDeferred(uint8_t m) { gBeepMode = m; }
+// v23 SD card logging (settings + the SD task's state)
+static bool gSdEnabled = false;
+static uint8_t gSdCsv = SETTINGS_CSV_SEMICOLON;
+static uint8_t gSdState = 0; // SDLOG_STATE_OFF
+bool settingsGetSdEnabled() { return gSdEnabled; }
+void settingsSetSdEnabledDeferred(bool e) { gSdEnabled = e; }
+uint8_t settingsGetSdCsvFormat() { return gSdCsv; }
+void settingsSetSdCsvFormatDeferred(uint8_t f) { gSdCsv = f; }
+uint8_t sdlogState() { return gSdState; }
+// v24 DATA HOLD (hold.ino stand-in) + its setting
+static uint8_t gHoldMode = SETTINGS_HOLD_MANUAL;
+uint8_t settingsGetHoldMode() { return gHoldMode; }
+void settingsSetHoldModeDeferred(uint8_t m) { gHoldMode = m; }
+static uint8_t gHoldState = 0; // HOLD_STATE_OFF
+static int gHoldStarts = 0, gHoldStops = 0;
+static uint8_t gHoldStartMode = 0;
+static uint32_t gHoldStartAt = 0;
+static bool gHoldShowTag = false;
+void holdStart(uint8_t mode, uint32_t atMs, bool showTag)
+{
+    gHoldStarts++; gHoldStartMode = mode; gHoldStartAt = atMs; gHoldShowTag = showTag;
+    gHoldState = (mode == SETTINGS_HOLD_AUTO) ? HOLD_STATE_AUTO_WAIT : HOLD_STATE_MANUAL;
+}
+void holdStop() { gHoldStops++; gHoldState = HOLD_STATE_OFF; }
+uint8_t holdState() { return gHoldState; }
+// v24: the manual HOLD preview at the press (frozen + HOLD lit)
+static bool gFrozen = false;
+static uint32_t gFrozenAt = 0;
+void holdPreview(uint32_t atMs) { if (gHoldState == HOLD_STATE_OFF) { gFrozen = true; gFrozenAt = atMs; } }
+void holdCancelPreview() { gFrozen = false; }
 void settingsSetStatsIntervalDeferred(uint8_t index) { gStoredInterval = index; gIntervalSaves++; }
 
 static bool gPress[4], gShort[4], gLong[4];
@@ -75,6 +108,7 @@ static int gLogClearedBeeps = 0;
 void beeperPlayLogCleared() { gLogClearedBeeps++; }
 static int gAsyncBeeps = 0;
 void beeperBeepAsync(uint16_t) { gAsyncBeeps++; }
+void beeperAlarmAsync(uint16_t) { gAsyncBeeps++; } // v23: the limit alarm beeps as an alarm sound
 // v14 graph settings ("EEPROM")
 static uint8_t gGraphStored[4] = {CONFIG_GRAPH_DEFAULT_INTERVAL_INDEX, CONFIG_GRAPH_DEFAULT_YMODE, CONFIG_GRAPH_DEFAULT_TRACE, CONFIG_GRAPH_DEFAULT_SPAN_INDEX};
 static int gGraphSaves = 0;
@@ -139,7 +173,7 @@ static void setClock()
 static uint32_t nowSeconds() { return gRtcOn ? gBaseSeconds + gClockMs / 1000 : 0; }
 
 // ---- helpers ----
-struct Ref { double value; bool overload; std::string function; uint32_t ts; bool settle; };
+struct Ref { double value; bool overload; std::string function; uint32_t ts; bool settle; double tsec; };
 // v20: the same settling rule as datalog.ino - the first CONFIG_DATALOG_SETTLE_READINGS readings after a change of
 // the function (or after a frame that is not a reading) are left out of the statistics
 static std::string gSettlePrefix;
@@ -173,6 +207,7 @@ static void feedDigits(const char *digits6, int dp, uint16_t ind, uint8_t unit)
     uiFunctionFilter(f, sizeof(f), keithleyFunctionPrefix(unit, ind));
     r.function = f;
     r.ts = nowSeconds();
+    r.tsec = gRtcOn ? gClockMs / 1000.0 : -1.0; // v25: the RTC time with centiseconds (the offset cancels out)
     gRef.push_back(r);
 }
 
@@ -232,6 +267,40 @@ static long referenceFirstIndex(uint32_t windowSeconds, size_t logSize)
         if (gRef[i].ts >= cutoff) return (long)i + 1;
     return (long)logSize;
 }
+
+// v25: standard deviation (n - 1) and trend (least squares over the RTC time, timestamped records only) of the
+// records not older than windowSeconds, the function filter applied
+struct Spread { size_t n; double sdev; bool sdevOk; double slope; bool slopeOk; };
+static Spread referenceSpread(const char *function, uint32_t windowSeconds)
+{
+    uint32_t cutoff = nowSeconds() > windowSeconds ? nowSeconds() - windowSeconds : 0;
+    std::vector<double> v, t, vt;
+    for (const Ref &r : gRef)
+    {
+        if (windowSeconds != 0 && r.ts < cutoff) continue;
+        if (r.overload || r.settle || r.function != function) continue;
+        v.push_back(r.value);
+        if (r.tsec >= 0) { t.push_back(r.tsec); vt.push_back(r.value); }
+    }
+    Spread s{v.size(), 0, false, 0, false};
+    if (v.size() >= 2)
+    {
+        double m = 0; for (double x : v) m += x; m /= v.size();
+        double q = 0; for (double x : v) q += (x - m) * (x - m);
+        s.sdev = sqrt(q / (v.size() - 1)); s.sdevOk = true;
+    }
+    if (t.size() >= 3)
+    {
+        double mt = 0, mv = 0;
+        for (size_t i = 0; i < t.size(); i++) { mt += t[i]; mv += vt[i]; }
+        mt /= t.size(); mv /= t.size();
+        double sxx = 0, sxy = 0;
+        for (size_t i = 0; i < t.size(); i++) { sxx += (t[i] - mt) * (t[i] - mt); sxy += (t[i] - mt) * (vt[i] - mv); }
+        if (sxx > 0) { s.slope = sxy / sxx; s.slopeOk = true; }
+    }
+    return s;
+}
+static bool nearRel(double a, double b, double rel) { return fabs(a - b) <= rel * (fabs(b) + 1e-30); }
 
 static bool near(double a, double b) { return fabs(a - b) <= 1e-9 * (1.0 + fabs(b)); }
 static void pollUntilIdle(int maxPolls = 100) { for (int i = 0; i < maxPolls && uiJobRunning; i++) uiPoll(); }
@@ -300,6 +369,48 @@ int main()
         CHECK(uiDecimalsFor(0) == 5 && uiDecimalsFor(3) == 2 && uiDecimalsFor(-1) == 3, "decimals");
         uiFunctionFilter(u, sizeof(u), " dB"); CHECK_STR(u, "DB", "filter dB");
         uiFunctionFilter(u, sizeof(u), "DCV"); CHECK_STR(u, "DCV", "filter DCV");
+
+        // v25: the numbers of statistics pages 2 and 3
+        char n[16], un[8], want[8];
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 8.234e-6, KEITHLEY_UNIT_V, false, "", "x");
+        snprintf(want, sizeof(want), "%cV", FONT_CH_MICRO); CHECK_STR(n, "8.23", "eng 8.23"); CHECK_STR(un, want, "eng uV");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 75.3e-9, KEITHLEY_UNIT_MV, false, "", "x");
+        CHECK_STR(n, "75.3", "eng 75.3"); CHECK_STR(un, "nV", "eng nV (base unit, whatever the range)");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 999.7e-9, KEITHLEY_UNIT_V, false, "", "x");
+        snprintf(want, sizeof(want), "%cV", FONT_CH_MICRO); CHECK_STR(n, "1.00", "999.7 n rounds to 1.00 u"); CHECK_STR(un, want, "... micro");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 0.0, KEITHLEY_UNIT_V, true, "/h", "x");
+        CHECK_STR(n, "0.00", "eng zero, no sign"); CHECK_STR(un, "V/h", "eng zero in the base unit");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 1234.0, KEITHLEY_UNIT_KOHM, false, "", "x");
+        snprintf(want, sizeof(want), "k%c", FONT_CH_OHM); CHECK_STR(n, "1.23", "eng 1.23 k"); CHECK_STR(un, want, "eng kOhm");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 12.34e-6, KEITHLEY_UNIT_V, true, "/h", "x");
+        snprintf(want, sizeof(want), "%cV/h", FONT_CH_MICRO); CHECK_STR(n, "+12.3", "trend with a sign"); CHECK_STR(un, want, "uV/h");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), -4.171e-3, KEITHLEY_UNIT_UA, true, "/m", "x");
+        CHECK_STR(n, "-4.17", "negative trend"); CHECK_STR(un, "mA/m", "mA/m");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), NAN, KEITHLEY_UNIT_V, true, "/m", "---");
+        CHECK_STR(n, "---", "eng placeholder"); CHECK_STR(un, "V/m", "placeholder keeps the unit");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 0.01234, KEITHLEY_UNIT_DB, false, "", "x");
+        CHECK_STR(n, "0.0123", "dB without a prefix"); CHECK_STR(un, "dB", "dB");
+        uiFormatEngineering(n, sizeof(n), un, sizeof(un), 123.4, KEITHLEY_UNIT_V, false, "", "x");
+        CHECK_STR(n, "123", "eng 3 digits"); CHECK_STR(un, "V", "no prefix");
+        uiFormatRatio(n, sizeof(n), un, sizeof(un), 6.67e-6, "x"); CHECK_STR(n, "6.67", "ratio ppm"); CHECK_STR(un, "ppm", "ppm");
+        uiFormatRatio(n, sizeof(n), un, sizeof(un), 2.35e-3, "x"); CHECK_STR(n, "0.235", "ratio %"); CHECK_STR(un, "%", "%");
+        uiFormatRatio(n, sizeof(n), un, sizeof(un), 2.35e-4, "x"); CHECK_STR(n, "235", "ratio 235 ppm");
+        uiFormatRatio(n, sizeof(n), un, sizeof(un), NAN, "---"); CHECK_STR(n, "---", "ratio placeholder"); CHECK_STR(un, "ppm", "placeholder ppm");
+        uiFormatDigits(n, sizeof(n), 8.23e-6, KEITHLEY_UNIT_V, 5); CHECK_STR(n, "0.82", "0.82 dgt");
+        uiFormatDigits(n, sizeof(n), 1.234e-4, KEITHLEY_UNIT_V, 5); CHECK_STR(n, "12.3", "12.3 dgt");
+        uiFormatDigits(n, sizeof(n), 0.5e-3, KEITHLEY_UNIT_MV, 3); CHECK_STR(n, "500", "mV range: 0.5 mV = 500 dgt");
+        uiFormatSignificant3(n, sizeof(n), 9.996, false, 3); CHECK_STR(n, "10.0", "9.996 -> 10.0");
+        uiFormatSignificant3(n, sizeof(n), -0.0001, true, 2); CHECK_STR(n, "0.00", "rounds to zero: no sign");
+        uiFormatSignificant3(n, sizeof(n), 0.000123, false, 6); CHECK_STR(n, "0.000123", "small, 6 decimals");
+        {
+            const double probes[] = {1e-15, 3.3e-12, 1e-9, 4.56e-6, 0.0999, 0.9996, 1.0, 99.96, 999.6, 12345.0, 9.9e8};
+            for (double v : probes)
+                for (int sign = -1; sign <= 1; sign += 2)
+                {
+                    uiFormatEngineering(n, sizeof(n), un, sizeof(un), sign * v, KEITHLEY_UNIT_KOHM, true, "/h", "x");
+                    CHECK(strlen(n) <= 6 && strlen(un) <= 4, "engineering text fits the fields");
+                }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -333,6 +444,26 @@ int main()
         CHECK(near(st.average, e.avg), "average");
         CHECK(st.medianValid && near(st.median, e.med), "median even");
         CHECK(!datalogComputeStats("OHM", -10, 0, &st), "other function: nothing");
+        // v25: standard deviation and trend
+        Spread sp = referenceSpread("DCV", 0);
+        datalogComputeStats("DCV", 0, 0, &st);
+        CHECK(st.sdevValid && nearRel(st.sdev, sp.sdev, 1e-6), "standard deviation");
+        CHECK(st.slopeValid && fabs(st.slopePerSecond - sp.slope) <= 1e-6 * sp.sdev, "trend (least squares over the time)");
+        CHECK(st.slopeCount == st.count, "every record has a timestamp");
+        DatalogStats nm;
+        CHECK(datalogComputeStatsNoMedian("DCV", 0, 0, &nm) && !nm.medianValid && nm.sdev == st.sdev && nm.average == st.average,
+              "without the median: the rest identical");
+        CHECK(datalogComputeStats("DCV", -1, 0, &st) && st.count == 1 && !st.sdevValid && !st.slopeValid, "one record: no SDV, no trend");
+        CHECK(datalogComputeStats("DCV", -3, 0, &st) && st.sdevValid && st.slopeValid, "three records: both");
+    }
+    // a clean ramp: one count every reading (300 ms) = 1e-5 V / 0.3 s, the spread of 0..19 counts
+    {
+        DatalogStats st;
+        for (int k = 0; k < 20; k++) feed(150000 + k, 0, KEITHLEY_UNIT_V);
+        CHECK(datalogComputeStats("DCV", -20, 0, &st), "ramp");
+        CHECK(nearRel(st.slopePerSecond, 1e-5 / 0.3, 1e-4), "ramp: slope");
+        CHECK(nearRel(st.sdev, 1e-5 * sqrt(20.0 * 21.0 / 12.0), 1e-4), "ramp: SDV of 0..19 counts");
+        printf("ramp: SDV %.4g V, trend %.4g V/s\n", st.sdev, st.slopePerSecond);
     }
     feedDigits("  L   ", 1, 0, KEITHLEY_UNIT_V);
     feed(100500, 0, KEITHLEY_UNIT_V);
@@ -389,6 +520,7 @@ int main()
             CHECK(ok && r.count == whole.count, "slice job count");
             CHECK(r.minimum == whole.minimum && r.maximum == whole.maximum && r.average == whole.average, "slice job min/max/avg identical");
             CHECK(r.medianValid && r.median == whole.median, "slice job median identical");
+            CHECK(r.sdev == whole.sdev && r.slopePerSecond == whole.slopePerSecond, "v25: slice job SDV / trend identical");
             CHECK(!job.active && job.samples == NULL, "job released");
             if (slice == 200) CHECK(steps >= 6, "a long job really takes several slices");
         }
@@ -419,6 +551,11 @@ int main()
         datalogComputeStats("DCV", first, 0, &st);
         Expect e = referenceSince("DCV", 10);
         CHECK(st.count == e.n, "10 s window");
+        // v25: records without a timestamp count for SDV, not for the trend
+        DatalogStats all;
+        datalogComputeStats("DCV", 0, 0, &all);
+        CHECK(all.count == 200 && all.slopeCount == 100 && all.slopeValid, "trend only over the timestamped records");
+        CHECK(nearRel(all.slopePerSecond, 1e-5 / 0.3, 1e-4), "trend of the timestamped ramp");
         printf("10 s window holds %u records (3.33/s expected)\n", st.count);
         CHECK(datalogFirstRecordSince(0, &estimate) == 1, "FULL starts at the oldest record");
 
@@ -673,6 +810,7 @@ int main()
         fakeMillisOffset() += 5000;
         uiPoll();
         CHECK(datalogCount() > 0 && gLogClearedBeeps == 0, "a short hold does not clear");
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_SPREAD, "v25: ... it is a click: page 2");
 
         // held long enough
         press(BUTTON_RCL); gHeld[BUTTON_RCL] = true;
@@ -683,6 +821,7 @@ int main()
         fakeMillisOffset() += 200;
         CHECK(uiPoll(), "clearing redraws");
         CHECK(datalogCount() == 0, "log cleared");
+        gRef.clear(); // v25: the reference follows the log (pages 2 and 3 below compare with it)
         CHECK(gLogClearedBeeps == 1, "long beep played");
         CHECK(!uiJobRunning, "no job left on the cleared log");
         FbStatsScene sc;
@@ -694,6 +833,7 @@ int main()
         gHeld[BUTTON_RCL] = false;
         gLong[BUTTON_RCL] = true; // the release that follows is a long one - drained, no other effect
         uiPoll();
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_SPREAD, "v25: the release of the clearing hold does not page");
 
         // the screen recovers with new readings
         for (int k = 0; k < 3; k++) feed(100000 + k, 0, KEITHLEY_UNIT_V);
@@ -728,9 +868,17 @@ int main()
         uiFillHelpScene(&hs);
         CHECK(uiGetHelpSection() == HELP_SECTION_STAT, "help from STATS: the STAT section");
         CHECK(strncmp(hs.lines[0], "STATISTIKA:", 11) == 0 && !hs.underline[0] && !hs.underline[1], "STAT help: no preface, its own text (CZ)");
-        CHECK(uiGetHelpLineCount() == FB_HELP_LINES && strstr(hs.lines[FB_HELP_LINES - 1], "1/1") != NULL, "STAT help: one page");
+        CHECK(uiGetHelpLineCount() == 2 * FB_HELP_LINES && strstr(hs.lines[FB_HELP_LINES - 1], "1/2") != NULL, "v25 STAT help: two pages");
         press(BUTTON_DB); uiPoll();
-        CHECK(uiGetHelpTop() == 0, "one page: dB stays");
+        CHECK(uiGetHelpTop() == FB_HELP_LINES, "dB: page 2 (the pages of the statistics)");
+        press(BUTTON_DB); uiPoll();
+        CHECK(uiGetHelpTop() == FB_HELP_LINES, "last page: dB stays");
+        // v25: RCL = next page, from the last one back to the first (like RCL = next line on the settings screens)
+        press(BUTTON_RCL); uiPoll();
+        CHECK(uiGetHelpTop() == 0, "RCL on the last page: back to the first");
+        press(BUTTON_RCL); uiPoll();
+        CHECK(uiGetHelpTop() == FB_HELP_LINES, "RCL: next page");
+        CHECK(uiGetScreen() == UI_SCREEN_HELP, "RCL keeps the help open");
 
         // timeout: a press restarts it, after CONFIG_UI_HELP_TIMEOUT_MS without buttons the help closes like STO
         fakeMillisOffset() += CONFIG_UI_HELP_TIMEOUT_MS - 1000;
@@ -760,6 +908,7 @@ int main()
         press(BUTTON_STO);
         CHECK(uiPoll(), "leaving the help redraws");
         CHECK(uiGetScreen() == UI_SCREEN_QUICKSTATS, "STO returns to STATS");
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_SPREAD, "v25: back from the help the page stays");
         CHECK(!gRelDbEnabled, "REL/dB still blocked on STATS");
         pollUntilIdle();
 
@@ -773,6 +922,98 @@ int main()
         uiPoll();
         CHECK(uiGetStatsInterval() == 2, "REL released: shorter interval");
         uiSetStatsInterval(2);
+        pollUntilIdle();
+    }
+
+    // v25: pages 2 and 3 - RCL click cycles them, the numbers against the reference, the page kept with the interval
+    {
+        CHECK(uiGetScreen() == UI_SCREEN_QUICKSTATS && uiGetStatsInterval() == 2, "on STATS, 1 MIN");
+        for (int k = 0; k < 40; k++) feed(100100 + 3 * k + (k % 3), 0, KEITHLEY_UNIT_V);
+        uiPoll(); pollUntilIdle();
+        FbStatsScene sc;
+        uiFillStatsScene(&sc);
+        CHECK(sc.page == FB_STATS_PAGE_SPREAD, "the scene carries the page");
+        Expect e = referenceSince("DCV", 60);
+        Spread sp = referenceSpread("DCV", 60);
+        char want[24], wantUnit[8];
+        CHECK(sp.sdevOk && sp.slopeOk, "reference has SDV and trend");
+        uiFormatEngineering(want, sizeof(want), wantUnit, sizeof(wantUnit), sp.sdev, KEITHLEY_UNIT_V, false, "", UI_PLACEHOLDER);
+        CHECK_STR(sc.sdev, want, "SDV"); CHECK_STR(sc.sdevUnit, wantUnit, "SDV unit");
+        uiFormatNumber(want, sizeof(want), e.mx - e.mn, KEITHLEY_UNIT_V, 5); CHECK_STR(sc.dif, want, "DIF = MAX - MIN");
+        uiFormatRatio(want, sizeof(want), wantUnit, sizeof(wantUnit), sp.sdev / fabs(e.avg), UI_PLACEHOLDER);
+        CHECK_STR(sc.rel, want, "REL"); CHECK_STR(sc.relUnit, "ppm", "REL in ppm");
+        snprintf(want, sizeof(want), "%zu", e.n); CHECK_STR(sc.pts, want, "PTS");
+        uiFormatEngineering(want, sizeof(want), wantUnit, sizeof(wantUnit), sp.sdev / sqrt((double)e.n), KEITHLEY_UNIT_V, false, "", "---");
+        CHECK_STR(sc.sem, want, "SEM"); CHECK_STR(sc.semUnit, wantUnit, "SEM unit");
+        uiFormatEngineering(want, sizeof(want), wantUnit, sizeof(wantUnit), sp.slope * 60.0, KEITHLEY_UNIT_V, true, "/m", "---");
+        CHECK_STR(sc.trend, want, "TRD per minute on 1 MIN"); CHECK_STR(sc.trendUnit, wantUnit, "TRD unit /m");
+        CHECK(sc.trend[0] == '+', "a rising trend has a plus");
+        uiFormatDigits(want, sizeof(want), sp.sdev, KEITHLEY_UNIT_V, 5); CHECK_STR(sc.sdevDigits, want, "SDV in digits");
+        uiFormatRatio(want, sizeof(want), wantUnit, sizeof(wantUnit), (e.mx - e.mn) / fabs(e.avg), "---");
+        CHECK_STR(sc.difRel, want, "DIF relative"); CHECK_STR(sc.difRelUnit, wantUnit, "DIF relative unit");
+        printf("page 2: SDV '%s' DIF '%s' REL '%s %s' PTS '%s'; page 3: SEM '%s' TRD '%s' SDV '%s dgt' DIF '%s %s'\n",
+               sc.sdev, sc.dif, sc.rel, sc.relUnit, sc.pts, sc.sem, sc.trend, sc.sdevDigits, sc.difRel, sc.difRelUnit);
+
+        // RCL click: page 3, then page 1, then page 2 (at the release)
+        press(BUTTON_RCL); gHeld[BUTTON_RCL] = true;
+        uiPoll();
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_SPREAD, "RCL held: not yet");
+        fakeMillisOffset() += 150; gHeld[BUTTON_RCL] = false;
+        CHECK(uiPoll(), "the page change redraws");
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_TREND, "page 3");
+        press(BUTTON_RCL); uiPoll();
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_MAIN, "cyclic: page 1");
+        press(BUTTON_RCL); uiPoll(); press(BUTTON_RCL); uiPoll();
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_TREND, "page 3 again");
+
+        // the interval changes, the page stays; 1 HOUR gives the trend per hour
+        for (int i = 0; i < 3; i++) { press(BUTTON_DB); uiPoll(); pollUntilIdle(); }
+        CHECK(uiGetStatsInterval() == 5 && uiGetStatsPage() == FB_STATS_PAGE_TREND, "interval changed, page kept");
+        uiFillStatsScene(&sc);
+        sp = referenceSpread("DCV", 3600);
+        uiFormatEngineering(want, sizeof(want), wantUnit, sizeof(wantUnit), sp.slope * 3600.0, KEITHLEY_UNIT_V, true, "/h", "---");
+        CHECK_STR(sc.trend, want, "TRD per hour on 1 HOUR"); CHECK_STR(sc.trendUnit, wantUnit, "TRD unit /h");
+        uiSetStatsInterval(2); uiPoll(); pollUntilIdle();
+
+        // a function change: placeholders carry the units of the new function at once
+        for (int k = 0; k < 1; k++) feed(123400, 2, KEITHLEY_UNIT_KOHM);
+        uiPoll();
+        uiFillStatsScene(&sc);
+        if (uiJobRunning)
+        {
+            char ohm[8]; snprintf(ohm, sizeof(ohm), "%c/m", FONT_CH_OHM);
+            CHECK_STR(sc.trendUnit, ohm, "placeholder trend unit of the new function");
+            CHECK_STR(sc.trend, "---", "placeholder trend");
+        }
+        pollUntilIdle();
+        uiFillStatsScene(&sc);
+        CHECK_STR(sc.sdev, UI_PLACEHOLDER, "settling OHM records only: no SDV yet (page 2 placeholder)");
+        CHECK_STR(sc.sem, "---", "... no SEM (page 3 placeholder)");
+        for (int k = 0; k < 6; k++) feed(123400 + 10 * k, 2, KEITHLEY_UNIT_KOHM);
+        uiPoll(); pollUntilIdle();
+        uiFillStatsScene(&sc);
+        char kohm[8]; snprintf(kohm, sizeof(kohm), "k%c/m", FONT_CH_OHM);
+        CHECK_STR(sc.trendUnit, kohm, "OHM trend in kOhm per minute");
+        CHECK(strcmp(sc.sdev, UI_PLACEHOLDER) != 0, "OHM SDV");
+        // dB: no relative numbers
+        for (int k = 0; k < 6; k++) feed(12345 + k, 3, KEITHLEY_UNIT_DB);
+        uiPoll(); pollUntilIdle();
+        uiFillStatsScene(&sc);
+        CHECK_STR(sc.rel, UI_PLACEHOLDER, "dB: no REL");
+        CHECK_STR(sc.difRel, "---", "dB: no relative DIF");
+        CHECK_STR(sc.sdevUnit, "dB", "dB without a prefix");
+        for (int k = 0; k < 4; k++) feed(100000 + k, 0, KEITHLEY_UNIT_V);
+        uiPoll(); pollUntilIdle();
+
+        // closed and opened again: page 1
+        press(BUTTON_STO); uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_LCD, "STO: LCD");
+        press(BUTTON_STO); gHeld[BUTTON_STO] = true; uiPoll();
+        gHeld[BUTTON_STO] = false; uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_QUICKSTATS, "STO click: STATS again");
+        CHECK(uiGetStatsPage() == FB_STATS_PAGE_MAIN, "opened anew: page 1");
+        uiFillStatsScene(&sc);
+        CHECK(sc.page == FB_STATS_PAGE_MAIN, "the scene too");
         pollUntilIdle();
     }
 
@@ -843,7 +1084,8 @@ int main()
         CHECK(uiGetScreen() == UI_SCREEN_DMM_SETUP && uiGetDmmSetupRow() == 0, "the release changes nothing, cursor on the language");
         FbSetupScene ds;
         uiFillDmmSetupScene(&ds);
-        CHECK(ds.rowCount == 3 && strcmp(ds.title, "DMM - NASTAVENI") == 0 && strcmp(ds.values[0], "CZ - CESTINA") == 0, "DMM settings scene (CZ)");
+        CHECK(ds.rowCount == FB_SETUP_ROWS && strcmp(ds.title, "DMM - NASTAVENI") == 0 && strcmp(ds.values[0], "CZ - CESTINA") == 0, "DMM settings scene (CZ)");
+        CHECK(!ds.moreAbove && ds.moreBelow && uiGetDmmSetupTop() == 0, "v23: 5 lines, the first 4 shown, more below");
         press(BUTTON_DB); uiPoll();
         CHECK(gLanguage == HELP_LANG_EN && gLanguageDeferred == 1, "dB: next language, saved deferred");
         uiFillDmmSetupScene(&ds);
@@ -858,16 +1100,94 @@ int main()
         press(BUTTON_DB); uiPoll();
         CHECK(gTheme == theme, "dB: next theme");
         press(BUTTON_RCL); uiPoll();
-        bool beep = gBeep;
-        press(BUTTON_DB); uiPoll();
-        CHECK(gBeep == !beep, "dB: sound toggled");
+        // v23: sound ALL -> ALARMS ONLY -> OFF -> ALL (dB), back with REL
+        gBeepMode = SETTINGS_BEEP_ALL;
         uiFillDmmSetupScene(&ds);
-        CHECK(strcmp(ds.values[2], gBeep ? "ZAP" : "VYP") == 0, "sound value");
+        CHECK_STR(ds.values[2], "VSE", "sound value ALL");
+        press(BUTTON_DB); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(gBeepMode == SETTINGS_BEEP_ALARMS, "dB: alarms only");
+        CHECK_STR(ds.values[2], "JEN ALARMY", "sound value ALARMS");
+        press(BUTTON_DB); uiPoll();
+        CHECK(gBeepMode == SETTINGS_BEEP_OFF, "dB: off");
+        press(BUTTON_DB); uiPoll();
+        CHECK(gBeepMode == SETTINGS_BEEP_ALL, "dB: round to all");
         press(BUTTON_REL); uiPoll();
-        CHECK(gBeep == beep, "REL: toggled back");
+        CHECK(gBeepMode == SETTINGS_BEEP_OFF, "REL: back to off");
+        uiFillDmmSetupScene(&ds);
+        CHECK_STR(ds.values[2], "VYP", "sound value OFF");
+        press(BUTTON_DB); uiPoll();
+        CHECK(gBeepMode == SETTINGS_BEEP_ALL, "dB: all again");
+        // v23: SD card line (4th) - toggles; shows the card state
         press(BUTTON_RCL); uiPoll();
-        CHECK(uiGetDmmSetupRow() == 0, "RCL wraps to the first line");
-        for (int i = 0; i < 3; i++) { uiFillDmmSetupScene(&ds); CHECK(strlen(ds.values[i]) <= FB_SETUP_FIELD_CHARS && strlen(ds.labels[i]) <= 12, "DMM settings texts fit"); }
+        CHECK(uiGetDmmSetupRow() == UI_DMM_SETUP_ROW_SD && uiGetDmmSetupTop() == 0, "RCL: SD line, still no scrolling");
+        uiFillDmmSetupScene(&ds);
+        CHECK(ds.cursorRow == 3 && strcmp(ds.labels[3], "SD KARTA") == 0 && strcmp(ds.values[3], "VYP") == 0, "SD line off");
+        press(BUTTON_DB); uiPoll();
+        CHECK(gSdEnabled, "dB: SD logging on");
+        gSdState = SDLOG_STATE_NO_CARD;
+        CHECK(uiPoll(), "v23: a change of the card state redraws the settings screen");
+        CHECK(!uiPoll(), "... once");
+        uiFillDmmSetupScene(&ds);
+        CHECK_STR(ds.values[3], "ZAP - CHYBI KARTA", "SD on, no card");
+        gSdState = SDLOG_STATE_LOGGING;
+        uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK_STR(ds.values[3], "ZAP", "SD on, logging");
+        gSdState = SDLOG_STATE_FULL;
+        uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK_STR(ds.values[3], "ZAP - PLNA KARTA", "SD on, card full");
+        // v23: CSV line (5th) - the list scrolls by one
+        press(BUTTON_RCL); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(uiGetDmmSetupRow() == UI_DMM_SETUP_ROW_CSV && uiGetDmmSetupTop() == 1 && ds.cursorRow == 3 && ds.moreAbove && ds.moreBelow,
+              "RCL: CSV line, scrolled by one, more above and (v24: HOLD) below");
+        CHECK(strcmp(ds.labels[0], "TEMA") == 0 && strcmp(ds.labels[3], "FORMAT CSV") == 0, "the window shows lines 2..5");
+        CHECK_STR(ds.values[3], "1,234 ; (CZ)", "CSV semicolon");
+        press(BUTTON_DB); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(gSdCsv == SETTINGS_CSV_COMMA, "dB: comma");
+        CHECK_STR(ds.values[3], "1.234 , (EN)", "CSV comma");
+        press(BUTTON_REL); uiPoll();
+        CHECK(gSdCsv == SETTINGS_CSV_SEMICOLON, "REL: semicolon again");
+        for (int lang = 0; lang < HELP_LANG_COUNT; lang++)
+        {
+            gLanguage = (uint8_t)lang;
+            for (int st = 0; st < SDLOG_STATE_COUNT; st++)
+            {
+                gSdState = (uint8_t)st;
+                for (int m = 0; m < SETTINGS_BEEP_MODES; m++)
+                {
+                    gBeepMode = (uint8_t)m;
+                    for (int top = 0; top < 2; top++)
+                    {
+                        uiFillDmmSetupScene(&ds);
+                        for (int i = 0; i < ds.rowCount; i++)
+                            CHECK(strlen(ds.values[i]) <= FB_SETUP_FIELD_CHARS && strlen(ds.labels[i]) <= 12, "DMM settings texts fit");
+                    }
+                }
+            }
+        }
+        gLanguage = HELP_LANG_CZ;
+        gBeepMode = SETTINGS_BEEP_ALL;
+        gSdEnabled = false;
+        gSdState = SDLOG_STATE_OFF;
+        // v24: HOLD line (6th) - MANUAL / AUTO HOLD, the window scrolls by two
+        press(BUTTON_RCL); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(uiGetDmmSetupRow() == UI_DMM_SETUP_ROW_HOLD && uiGetDmmSetupTop() == 2 && ds.cursorRow == 3 && ds.moreAbove && !ds.moreBelow,
+              "RCL: HOLD line, scrolled by two");
+        CHECK(strcmp(ds.labels[3], "HOLD") == 0 && strcmp(ds.values[3], "RUCNI") == 0, "HOLD manual");
+        press(BUTTON_DB); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(gHoldMode == SETTINGS_HOLD_AUTO && strcmp(ds.values[3], "AUTO HOLD") == 0, "dB: AUTO HOLD");
+        press(BUTTON_DB); uiPoll();
+        CHECK(gHoldMode == SETTINGS_HOLD_MANUAL, "dB: manual again (wraps)");
+        press(BUTTON_RCL); uiPoll();
+        uiFillDmmSetupScene(&ds);
+        CHECK(uiGetDmmSetupRow() == 0 && uiGetDmmSetupTop() == 0 && ds.cursorRow == 0 && !ds.moreAbove && ds.moreBelow,
+              "RCL wraps to the first line, the window back at the top");
         press(BUTTON_STO);
         CHECK(uiPoll() && uiGetScreen() == UI_SCREEN_LCD && gRelDbEnabled, "STO: back to the LCD, REL/dB active again");
 
@@ -882,6 +1202,47 @@ int main()
         CHECK(uiGetScreen() == UI_SCREEN_DMM_SETUP, "a press restarted the timeout");
         fakeMillisOffset() += 2000;
         CHECK(uiPoll() && uiGetScreen() == UI_SCREEN_LCD, "DMM settings timeout: back to the LCD");
+    }
+
+    // v24 DATA HOLD: STO held on the LCD starts HOLD (kind from the settings, on the first edge of the press);
+    // its release does nothing; a short STO then only ends HOLD; a short STO without HOLD opens the statistics
+    {
+        CHECK(uiGetScreen() == UI_SCREEN_LCD, "on the LCD before the HOLD test");
+        int beeps = gAsyncBeeps;
+        gHoldMode = SETTINGS_HOLD_MANUAL;
+        press(BUTTON_STO); gHeld[BUTTON_STO] = true;
+        uint32_t pressAt = gPressStart[BUTTON_STO];
+        uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_LCD && gHoldStarts == 0, "STO pressed: not decided yet (click or hold?)");
+        CHECK(gFrozen && gFrozenAt == pressAt, "manual: preview at once (frozen on the first edge, HOLD lit)");
+        fakeMillisOffset() += CONFIG_UI_HOLD_HOLD_MS / 2; uiPoll();
+        CHECK(gHoldStarts == 0 && gFrozen, "not confirmed before CONFIG_UI_HOLD_HOLD_MS, still frozen");
+        fakeMillisOffset() += CONFIG_UI_HOLD_HOLD_MS / 2 + 10;
+        CHECK(uiPoll() && gHoldStarts == 1 && gHoldStartMode == SETTINGS_HOLD_MANUAL && gHoldStartAt == pressAt && gHoldShowTag &&
+              gAsyncBeeps == beeps + 1 && uiGetScreen() == UI_SCREEN_LCD,
+              "STO held: manual HOLD confirmed (first edge), beep, TAG now");
+        gHeld[BUTTON_STO] = false; uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_LCD && gHoldStops == 0 && gHoldStarts == 1, "the release does nothing");
+        press(BUTTON_STO); uiPoll();
+        CHECK(gHoldStops == 1 && gHoldState == HOLD_STATE_OFF && uiGetScreen() == UI_SCREEN_LCD, "short STO with HOLD on: only ends it");
+        press(BUTTON_STO); uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_QUICKSTATS && gHoldStops == 1 && !gFrozen, "short STO without HOLD: statistics, LCD live again");
+        press(BUTTON_STO); uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_LCD, "STO on the statistics: back at the press");
+        gHoldMode = SETTINGS_HOLD_AUTO;
+        press(BUTTON_STO); gHeld[BUTTON_STO] = true; uiPoll();
+        CHECK(!gFrozen, "AUTO: nothing frozen at the press");
+        fakeMillisOffset() += CONFIG_UI_HOLD_HOLD_MS + 10; uiPoll();
+        CHECK(gHoldStarts == 2 && gHoldStartMode == SETTINGS_HOLD_AUTO && gHoldState == HOLD_STATE_AUTO_WAIT, "AUTO HOLD from the setting");
+        gHeld[BUTTON_STO] = false; uiPoll();
+        press(BUTTON_STO); gHeld[BUTTON_STO] = true; uiPoll();
+        fakeMillisOffset() += CONFIG_UI_HOLD_HOLD_MS + 10; uiPoll();
+        CHECK(gHoldStarts == 3 && gHoldStops == 1, "STO held again with HOLD on: starts over");
+        gHeld[BUTTON_STO] = false; uiPoll();
+        press(BUTTON_STO); uiPoll();
+        CHECK(gHoldStops == 2 && uiGetScreen() == UI_SCREEN_LCD, "short STO ends it");
+        gHoldMode = SETTINGS_HOLD_MANUAL;
+        printf("v24 HOLD: STO hold / click on the LCD checked\n");
     }
 
     // v17 limit alarm: dB held on the LCD opens its settings for the function being measured; mode, limits
@@ -1213,7 +1574,7 @@ int main()
         for (int k = 0; k < 20; k++) { press(BUTTON_DB); uiPoll(); }
         CHECK(uiGetHelpTop() == lastTop, "dB stops at the last page, which ends with the last line");
         uiFillHelpScene(&hs);
-        CHECK(strstr(hs.lines[FB_HELP_LINES - 1], "4/4") != NULL, "last line of the text (page mark 4/4) on the last row");
+        CHECK(strstr(hs.lines[FB_HELP_LINES - 1], "6/6") != NULL, "last line of the text (page mark 6/6, v24) on the last row");
         CHECK(lastTop % FB_HELP_LINES == 0, "help text fills whole pages (header + 4 lines, then 6 per page)");
         CHECK(!uiPoll(), "nothing to redraw without a button");
         press(BUTTON_REL); uiPoll();
@@ -1221,7 +1582,14 @@ int main()
         for (int k = 0; k < 20; k++) { press(BUTTON_REL); uiPoll(); }
         CHECK(uiGetHelpTop() == 0, "REL stops at the top");
         press(BUTTON_RCL); uiPoll();
-        CHECK(uiGetHelpTop() == 0 && uiGetScreen() == UI_SCREEN_HELP, "RCL does nothing on the help screen");
+        CHECK(uiGetHelpTop() == FB_HELP_LINES && uiGetScreen() == UI_SCREEN_HELP, "v25: RCL = next page on the help screen");
+        {
+            int guard = 0;
+            while (uiGetHelpTop() != lastTop && guard++ < 20) { press(BUTTON_RCL); uiPoll(); }
+            CHECK(uiGetHelpTop() == lastTop, "RCL reaches the last page");
+            press(BUTTON_RCL); uiPoll();
+            CHECK(uiGetHelpTop() == 0, "RCL after the last page: the first one");
+        }
 
         // holds: dB held 1 s -> end (while held, release does not page further), REL held 1 s -> start
         press(BUTTON_DB); gHeld[BUTTON_DB] = true; uiPoll();

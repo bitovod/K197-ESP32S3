@@ -21,32 +21,50 @@ screen.
 | REL | REL of the K197 (sent at the release) | help for this screen |
 | dB | dB of the K197 (sent at the release) | limit alarm settings of the function being measured |
 | REL + dB | **marker** (TAG) on the reading shown, nothing is sent to the K197 | — |
-| STO | statistics screen | — |
-| RCL | graph | DMM settings (language, theme, sound) |
+| STO | statistics screen (with HOLD on: ends HOLD) | **DATA HOLD** (see below) |
+| RCL | graph | DMM settings (language, theme, sound, SD card, CSV format, HOLD) |
 
 REL and dB reach the K197 only at the release, so that a hold can open the help or the alarm settings instead.
 The delay is the length of the press, typically under 0.2 s.
 
 The REM indicator is never lit on this instrument, because there is no GPIB board. Its place shows **TAG**: dim
 normally, lit for 2 s after a marker. When the K197 itself lights REM (during its self-test), REM is drawn.
+In the same way STO and RCL (the K197's data-store keys are not wired) show **HOLD** and **AUTO**, and BAT shows
+**SD!** (see the SD card below).
 
 ### Statistics (STO)
 
 ![Statistics](images/stats_grn.png)
 
-Top line: the interval (between triangles), date and time, live value. Below: **AVG** average, **MED** median,
-**MAX** and **MIN** of the readings of the current function within the interval. Intervals: 5 SEC, 10 SEC,
-1 MIN, 5 MIN, 15 MIN, 1 HOUR, 6 HRS.
+Top line (the same on every page): the interval (between triangles), date and time, live value. Below, the
+readings of the current function within the interval, on three pages (RCL click = next page). Intervals: 5 SEC,
+10 SEC, 1 MIN, 5 MIN, 15 MIN, 1 HOUR, 6 HRS.
+
+| Page | Left | Right |
+|---|---|---|
+| 1 | **AVG** average, **MED** median | **MAX**, **MIN** |
+| 2 | **SDV** standard deviation, **REL** = SDV / AVG (ppm, % from 0.1 %) | **DIF** = MAX − MIN, **PTS** number of readings |
+| 3 | **SEM** = SDV / √PTS (uncertainty of the average), **SDV** in digits of the last place (dgt) | **TRD** trend, **DIF** = (MAX − MIN) / AVG |
+
+![Statistics, page 2](images/stats_page2.png)
+![Statistics, page 3](images/stats_page3.png)
+
+SDV, SEM and TRD have three significant digits and an SI prefix (nV, µV, mV …). **TRD** is the slope of a line
+fitted through the readings (least squares over the RTC time): per minute (`/m`) up to the 1 MIN interval, per
+hour (`/h`) for the longer ones. In dB there are no relative values (REL and the relative DIF show dashes).
+The page stays when the interval changes and when you come back from the help; the statistics opened anew start
+on page 1.
 
 | Key | Action |
 |---|---|
 | REL / dB | shorter / longer interval (REL and dB do not reach the K197 here) |
+| RCL click | next page (1 → 2 → 3 → 1) |
 | RCL hold 3 s | **clears the whole log** (long confirmation beep) |
 | REL hold | help |
 | STO | back to the main display |
 
-`--.----` means "no value": the computation is still running after a change, or there is no reading in the
-interval yet.
+`--.----` (on page 3 `---`) means "no value": the computation is still running after a change, or there are
+not enough readings in the interval yet (SDV needs 2, the trend 3 with an RTC time).
 
 ### Graph (RCL)
 
@@ -88,8 +106,10 @@ On every settings screen: **RCL** moves to the next line, **REL / dB** change th
 **STO** goes back. The screen also closes by itself after 60 s without a key. Changes apply at once. They are
 saved to EEPROM about 10 s after the last change, so stepping through values costs a single flash write.
 
-**DMM settings** (RCL held on the main display): LANGUAGE (CZ/EN), THEME (8 colour themes, the display changes at
-once), SOUND (all beeps on/off).
+**DMM settings** (RCL held on the main display), six lines, four at a time (small triangles at the right edge
+show that the list goes on): LANGUAGE (CZ/EN), THEME (8 colour themes, the display changes at once), SOUND (ALL,
+ALARMS ONLY = only the limit and SD card alarms, OFF = really everything off), SD CARD (ON / OFF, with the card
+state), CSV FORMAT (`1.234 ,` or `1,234 ;`), HOLD (MANUAL / AUTO HOLD).
 
 #### Colour themes
 
@@ -122,8 +142,9 @@ Single pictures: [RED](images/theme_red.png) · [GRN](images/theme_grn.png) · [
 ![Help](images/help_en.png)
 
 Hold REL on the main display, the statistics, the graph or on the ALARM/SIGNAL lines of the alarm settings to get
-the help for that screen. REL / dB click = previous / next page, REL / dB hold = first / last page, STO = back.
-The help closes by itself after 60 s without a key.
+the help for that screen. RCL = next page (after the last one back to the first, like RCL = next line on the
+settings screens), REL / dB click = previous / next page, REL / dB hold = first / last page, STO = back. The help
+closes by itself after 60 s without a key.
 
 ## Limit alarm
 
@@ -172,11 +193,55 @@ You get a double beep and **TAG** lit for 2 s (on the main display). In the grap
 edge. Over SCPI, `LOG:DATA?` shows `TAG` among the indicators of a marked record, and `LOG:MARKer?` lists only the
 marked records.
 
+## DATA HOLD
+
+Hold **STO** for 1 s on the main display. Only the display freezes: the log, the statistics, the graph, the alarm,
+the SD card and SCPI `READ?` keep working with the live readings. What HOLD does is chosen on the DMM settings
+screen (HOLD line, also `MEASure:HOLD ON|AUTO|OFF`):
+
+- **MANUAL**: the reading shown at the **moment of the press** freezes at once and **HOLD** lights (in place of
+  STO). If you let go before 1 s it was just a click (the statistics open). After 1 s a short beep confirms it,
+  the reading is marked in the log and TAG lights.
+- **AUTO HOLD**: HOLD blinks while it waits; the first **stable** reading (4 readings in a row within ±2 counts,
+  same function and range, not settling, not OL and at least 100 counts from zero) freezes, **HOLD + AUTO** light,
+  a 200 ms beep sounds and the reading is marked. It keeps watching: another stable reading that differs is
+  captured the same way, so you can go from one test point to the next without touching the meter. Lifting the
+  probes (zero) or OL never replaces a captured reading. A change of the function drops it and waits again.
+
+![Manual HOLD](images/lcd_hold.png)
+![AUTO HOLD: a reading captured](images/lcd_auto_hold.png)
+
+A short STO ends HOLD (live display again), STO held again starts it over. Switching the K197 off ends HOLD.
+Constants in `config.h`: `CONFIG_UI_HOLD_HOLD_MS`, `CONFIG_HOLD_AUTO_*`, `CONFIG_HOLD_CAPTURE_BEEP_MS`.
+
+## SD card
+
+With **SD CARD = ON** on the DMM settings screen (or `MMEMory:LOG ON`) every reading also goes into a CSV file on
+a microSD card (FAT32, SDMMC 1-bit, pins in `config.h`):
+
+- **Files**: `/K197/YYYY-MM/K197_YYYY-MM-DD_hh-mm-ss_FUN.csv` (FUN = DCV, ACV, DCI, ACI, OHM, dB). A **new file**
+  at every change of the function, after the K197 was switched on and after a card was inserted; not at midnight
+  (an overnight measurement stays in one file). Without an RTC time: `/K197/NO-RTC/K197_nnnn_FUN.csv`.
+- **Content**: four comment lines (`# firmware`, function and unit, start, format), a header and lines like
+  `LOG:DATA?` (record number within the file, timestamp, status, function, value, indicators incl. `TAG` and
+  `SETTLE`). **CSV FORMAT**: `1.234 ,` (comma separated, decimal point) or `1,234 ;` (semicolon separated, decimal
+  comma - for a Czech Excel).
+- **Writing**: in blocks every 30 s, at once on a marker; on a change of the function, when the K197 is switched
+  off and when logging is switched OFF everything is written and the file closed. **SD CARD = OFF** = the card can
+  be removed safely.
+- **Problems** (no card, card full, write error): **SD!** in place of BAT blinks and a 0.5 s beep sounds every 5 s
+  (with SOUND = ALL or ALARMS ONLY). The **first press of any key** only silences the beep (that press does nothing
+  else); SD! keeps blinking. Readings not yet written stay in PSRAM and go to a new file on the next card.
+- `MMEMory:STATe?` shows the state, the file, the records written and the free space; `SYSTem:DIAGnostic?` the
+  write times.
+
+![SD card problem: SD! lit](images/lcd_sd.png)
+
 ## The log
 
 Every reading goes into the log in PSRAM, about 600 000 readings (~50 h at 3.3 readings/s; then the oldest are
 overwritten). Each reading has its date and time from the RTC. The log is **lost when the instrument is switched
-off**. Read it out with `LOG:DATA?` before that (an SD card is planned). The log is used by the statistics, the
+off**. Read it out with `LOG:DATA?` before that, or keep it on the SD card (see above). The log is used by the statistics, the
 graph, the alarm defaults and SCPI (`LOG:*`).
 
 **Changing the function.** The statistics and the graph always show only the function being measured (DCV, ACV,
@@ -235,29 +300,44 @@ pípnutí.
 | REL | REL multimetru (odešle se při uvolnění) | nápověda k této obrazovce |
 | dB | dB multimetru (odešle se při uvolnění) | nastavení alarmu mezí pro měřenou funkci |
 | REL + dB | **marker** (TAG) na zobrazenou hodnotu, do K197 se nic neposílá | — |
-| STO | obrazovka statistiky | — |
-| RCL | graf | nastavení DMM (jazyk, téma, zvuk) |
+| STO | obrazovka statistiky (při zapnutém HOLD: ukončí HOLD) | **DATA HOLD** (viz níže) |
+| RCL | graf | nastavení DMM (jazyk, téma, zvuk, SD karta, formát CSV, HOLD) |
 
 REL a dB dostane K197 až při uvolnění, aby podržení mohlo místo toho otevřít nápovědu nebo nastavení alarmu.
 Zpoždění odpovídá délce stisku, obvykle pod 0,2 s.
 
 Indikátor REM se na tomto přístroji nikdy nerozsvítí, protože chybí deska GPIB. Na jeho místě je **TAG**:
 normálně tlumený, 2 s po markeru rozsvícený. Když REM rozsvítí sám K197 (při self-testu), vykreslí se REM.
+Stejně tak STO a RCL (tlačítka paměti K197 nejsou zapojená) ukazují **HOLD** a **AUTO** a BAT ukazuje **SD!**
+(viz SD karta níže).
 
 ### Statistika (STO)
 
-Horní řádek: interval (mezi trojúhelníky), datum a čas, aktuální hodnota. Pod ním: **AVG** průměr, **MED** medián,
-**MAX** a **MIN** z odečtů aktuální funkce v intervalu. Intervaly: 5 SEC, 10 SEC, 1 MIN, 5 MIN, 15 MIN, 1 HOUR,
-6 HRS.
+Horní řádek (na všech stranách stejný): interval (mezi trojúhelníky), datum a čas, aktuální hodnota. Pod ním
+odečty aktuální funkce v intervalu na třech stranách (klik RCL = další strana). Intervaly: 5 SEC, 10 SEC, 1 MIN,
+5 MIN, 15 MIN, 1 HOUR, 6 HRS.
+
+| Strana | Vlevo | Vpravo |
+|---|---|---|
+| 1 | **AVG** průměr, **MED** medián | **MAX**, **MIN** |
+| 2 | **SDV** směrodatná odchylka, **REL** = SDV / AVG (ppm, od 0,1 % v %) | **DIF** = MAX − MIN, **PTS** počet měření |
+| 3 | **SEM** = SDV / √PTS (nejistota průměru), **SDV** v digitech posledního místa (dgt) | **TRD** trend, **DIF** = (MAX − MIN) / AVG |
+
+SDV, SEM a TRD mají tři platné číslice a předponu SI (nV, µV, mV …). **TRD** je sklon přímky proložené odečty
+(metoda nejmenších čtverců podle času z RTC): za minutu (`/m`) do intervalu 1 MIN, za hodinu (`/h`) u delších.
+V dB nejsou relativní hodnoty (REL a relativní DIF ukazují pomlčky). Strana zůstává při změně intervalu i po
+návratu z nápovědy; nově otevřená statistika začíná na straně 1.
 
 | Tlačítko | Akce |
 |---|---|
 | REL / dB | kratší / delší interval (REL a dB se tu do K197 neposílají) |
+| RCL klik | další strana (1 → 2 → 3 → 1) |
 | RCL podržet 3 s | **smaže celý log** (dlouhé potvrzovací pípnutí) |
 | REL podržet | nápověda |
 | STO | zpět na hlavní displej |
 
-`--.----` znamená „bez hodnoty“: po změně ještě běží výpočet, nebo v intervalu zatím není žádný odečet.
+`--.----` (na straně 3 `---`) znamená „bez hodnoty“: po změně ještě běží výpočet, nebo v intervalu zatím není
+dost odečtů (SDV potřebuje 2, trend 3 s časem z RTC).
 
 ### Graf (RCL)
 
@@ -292,8 +372,10 @@ Na každé nastavovací obrazovce **RCL** posune kurzor na další řádek, **RE
 a **STO** vrátí zpět. Obrazovka se také sama zavře po 60 s bez stisku. Změny platí hned. Do EEPROM se uloží asi
 10 s po poslední změně, takže procházení hodnot stojí jediný zápis do flash.
 
-**Nastavení DMM** (podržení RCL na hlavním displeji): JAZYK (CZ/EN), TEMA (8 barevných témat, displej se změní
-hned), ZVUK (všechna pípnutí ZAP/VYP).
+**Nastavení DMM** (podržení RCL na hlavním displeji), šest řádků, vidět jsou čtyři (malé trojúhelníky u pravého
+okraje ukazují, že seznam pokračuje): JAZYK (CZ/EN), TEMA (8 barevných témat, displej se změní hned), ZVUK (VSE,
+JEN ALARMY = jen alarm mezí a SD karty, VYP = opravdu vše vypnuto), SD KARTA (ZAP / VYP, se stavem karty), FORMAT
+CSV (`1.234 ,` nebo `1,234 ;`), HOLD (RUCNI / AUTO HOLD).
 
 #### Barevná témata
 
@@ -324,7 +406,8 @@ v `config.h`.
 ### Nápověda
 
 Podržením REL na hlavním displeji, ve statistice, v grafu nebo na řádcích ALARM/SIGNAL nastavení alarmu se otevře
-nápověda k dané obrazovce. REL / dB klik = předchozí / další strana, REL / dB podržet = první / poslední strana,
+nápověda k dané obrazovce. RCL = další strana (po poslední zase první, stejně jako RCL = další řádek na
+nastavovacích obrazovkách), REL / dB klik = předchozí / další strana, REL / dB podržet = první / poslední strana,
 STO = zpět. Nápověda se sama zavře po 60 s bez stisku.
 
 ## Alarm mezí
@@ -373,11 +456,48 @@ Následuje dvojpípnutí a na hlavním displeji se na 2 s rozsvítí **TAG**. V 
 hraně. Přes SCPI ukazuje `LOG:DATA?` u označeného záznamu mezi indikátory `TAG` a `LOG:MARKer?` vypíše jen
 označené záznamy.
 
+## DATA HOLD
+
+Podržte **STO** 1 s na hlavním displeji. Zmrazí se jen displej: log, statistika, graf, alarm, SD karta i SCPI
+`READ?` pracují dál s živými odečty. Co HOLD dělá, se volí na obrazovce nastavení DMM (řádek HOLD, také
+`MEASure:HOLD ON|AUTO|OFF`):
+
+- **RUCNI**: hodnota zobrazená v **okamžiku stisku** se hned zmrazí a rozsvítí se **HOLD** (na místě STO). Když
+  tlačítko pustíte dřív než za 1 s, byl to jen klik (otevře se statistika). Po 1 s to potvrdí krátké pípnutí,
+  hodnota se v logu označí a rozsvítí se TAG.
+- **AUTO HOLD**: HOLD bliká a čeká; první **ustálená** hodnota (4 odečty po sobě v rozmezí ±2 digity, stejná
+  funkce a rozsah, ne při ustalování, ne OL a aspoň 100 digitů od nuly) se zmrazí, rozsvítí se **HOLD + AUTO**,
+  zazní pípnutí 200 ms a hodnota se označí. Hlídá dál: další ustálenou hodnotu, která se liší, zachytí stejně, takže
+  jde měřit bod za bodem bez sahání na přístroj. Zvednutí hrotů (nula) ani OL zachycenou hodnotu nepřepíšou. Změna
+  funkce ji zahodí a čeká znovu.
+
+Krátký stisk STO HOLD ukončí (displej znovu živý), další podržení STO začne znovu. Vypnutí K197 HOLD ukončí.
+Konstanty v `config.h`: `CONFIG_UI_HOLD_HOLD_MS`, `CONFIG_HOLD_AUTO_*`, `CONFIG_HOLD_CAPTURE_BEEP_MS`.
+
+## SD karta
+
+Při **SD KARTA = ZAP** na obrazovce nastavení DMM (nebo `MMEMory:LOG ON`) jde každý odečet také do souboru CSV na
+kartě microSD (FAT32, SDMMC 1-bit, piny v `config.h`):
+
+- **Soubory**: `/K197/RRRR-MM/K197_RRRR-MM-DD_hh-mm-ss_FUN.csv` (FUN = DCV, ACV, DCI, ACI, OHM, dB). **Nový soubor**
+  při každé změně funkce, po zapnutí K197 a po vložení karty; o půlnoci ne (měření přes noc zůstane v jednom
+  souboru). Bez času z RTC: `/K197/NO-RTC/K197_nnnn_FUN.csv`.
+- **Obsah**: čtyři řádky komentáře (`# firmware`, funkce a jednotka, začátek, formát), záhlaví a řádky jako
+  `LOG:DATA?` (číslo záznamu v souboru, čas, stav, funkce, hodnota, indikátory včetně `TAG` a `SETTLE`). **FORMAT
+  CSV**: `1.234 ,` (oddělovač čárka, desetinná tečka) nebo `1,234 ;` (oddělovač středník, desetinná čárka - pro
+  český Excel).
+- **Zápis**: po blocích každých 30 s, hned při markeru; při změně funkce, vypnutí K197 a vypnutí záznamu se vše
+  zapíše a soubor zavře. **SD KARTA = VYP** = kartu lze bezpečně vyjmout.
+- **Potíže** (chybí karta, plná karta, chyba zápisu): **SD!** na místě BAT bliká a každých 5 s zazní pípnutí 0,5 s
+  (při ZVUK = VSE nebo JEN ALARMY). **První stisk libovolného tlačítka** pípání jen umlčí (nic jiného neudělá);
+  SD! bliká dál. Odečty, které se ještě nezapsaly, zůstanou v PSRAM a na další kartu se zapíší do nového souboru.
+- `MMEMory:STATe?` ukazuje stav, soubor, počet zapsaných záznamů a volné místo; `SYSTem:DIAGnostic?` časy zápisu.
+
 ## Log
 
 Každý odečet se ukládá do logu v PSRAM, asi 600 000 odečtů (asi 50 h při 3,3 odečtu/s, pak se přepisují
 nejstarší). Každý odečet má datum a čas z RTC. Log se **při vypnutí přístroje ztratí**. Před vypnutím ho můžete
-vyčíst příkazem `LOG:DATA?` (v plánu je SD karta). Log používá statistika, graf, výchozí meze alarmu a SCPI
+vyčíst příkazem `LOG:DATA?`, nebo ho průběžně ukládat na SD kartu (viz výše). Log používá statistika, graf, výchozí meze alarmu a SCPI
 (`LOG:*`).
 
 **Změna funkce.** Statistika i graf vždy ukazují jen právě měřenou funkci (DCV, ACV, DCI, ACI, OHM, dB). Po

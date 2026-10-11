@@ -6,7 +6,8 @@
 //   HELP_SECTION_DMM    opened from the LCD replica: preceded by the
 //                       two-line preface (firmware version, build time,
 //                       underlined - put in front by ui.ino), then the
-//                       keys of the DMM screen, the help navigation, SCPI
+//                       keys of the DMM screen, the help navigation, SCPI,
+//                       v23: the SD card
 //   HELP_SECTION_STAT   opened from the statistics screen: only its text
 //   HELP_SECTION_GRAPH  opened from the graph screen: graph + its settings
 //   HELP_SECTION_ALARM  v17: opened from the alarm settings screen
@@ -49,34 +50,52 @@ static const char *const helpLanguageNames[HELP_LANG_COUNT] = {"CZ", "EN"};
 static const char helpTextCzDmm[] =
 "REL, dB: puvodni funkce multimetru K197.       \n"
 "REL 1s: napoveda, dB 1s: alarm, REL+dB: TAG.   \n"
-"STO: obrazovka statistiky.                     \n"
-"RCL: graf, RCL 1s: nastaveni DMM.           1/4\n"
+"STO: statistika, STO 1s: HOLD (zmrazeni).      \n"
+"RCL: graf, RCL 1s: nastaveni DMM.           1/6\n"
 "ALARM (dB 1s):                                 \n"
 "Hlida dolni a/nebo horni mez, pro kazdou       \n"
 "funkci zvlast. Po zapnuti DMM je vypnuty.      \n"
 "Obrys nad minusem: hlidane meze; plny          \n"
 "blikajici trojuhelnik: hodnota je mimo mez.    \n"
-"RCL 1s na mezi: prevezme merenou hodnotu.   2/4\n"
+"RCL 1s na mezi: prevezme merenou hodnotu.   2/6\n"
+"HOLD (STO 1s, druh v nastaveni DMM):           \n"
+"RUCNI: zmrazi hodnotu z okamziku stisku + TAG. \n"
+"AUTO HOLD: HOLD blika, ceka na stabilni        \n"
+"hodnotu; zachycena: HOLD + AUTO, pipnuti, TAG. \n"
+"Nula a OL se nezachytavaji. Konec: STO.        \n"
+"                                            3/6\n"
 "HELP:                                          \n"
-"REL: predchozi strana, dB: dalsi strana.       \n"
+"RCL: dalsi strana (dokola), REL/dB: zpet/vpred.\n"
 "REL 1s: na zacatek, dB 1s: na konec.           \n"
 "STO: odchod z napovedy.                        \n"
 "Bez stisku tlacitka se zavre sama po 60 s.     \n"
-"                                            3/4\n"
+"                                            4/6\n"
 "SCPI:                                          \n"
 "Pro vice informaci a dalsi nastaveni pouzijte  \n"
 "USB virtualni seriovy port (rychlost 115200 Bd)\n"
 "a v SCPI prikaz HELP?                          \n"
 "Jazyk napovedy: SYST:LANG CZ|EN                \n"
-"Alarm: CALC:LIM:LOW|UPP|STAT|FAIL?          4/4\n";
+"Alarm: CALC:LIM:LOW|UPP|STAT|FAIL?          5/6\n"
+"SD KARTA (RCL 1s: nastaveni DMM):              \n"
+"Log na kartu, novy soubor pri zmene funkce     \n"
+"a po zapnuti K197. SD VYP: kartu lze vyjmout.  \n"
+"SD! blika: karta chybi, je plna nebo chyba.    \n"
+"Pipani zrusi prvni stisk libovolne klavesy.    \n"
+"ZVUK: VSE, JEN ALARMY nebo VYP.             6/6\n";
 
 static const char helpTextCzStat[] =
 "STATISTIKA:                                    \n"
 "Interval, datum a cas, aktualni hodnota.       \n"
-"AVG prumer, MED median, MAX a MIN za interval. \n"
-"REL: zkrati interval, dB: prodlouzi interval.  \n"
-"RCL 3s: smaze cely log.                        \n"
-"STO: zpet na zakladni displej.              1/1\n";
+"REL/dB: kratsi/delsi interval. RCL: dalsi      \n"
+"strana (1-2-3), RCL 3s: smaze cely log.        \n"
+"1: AVG prumer, MED median, MAX a MIN.          \n"
+"STO: zpet na zakladni displej.              1/2\n"
+"2: SDV smerodatna odchylka, REL = SDV/AVG,     \n"
+"DIF = MAX - MIN, PTS pocet mereni.             \n"
+"3: SEM = SDV/odmocnina(PTS) - nejistota AVG,   \n"
+"TRD trend (primka) za minutu (/m) do 1 MIN,    \n"
+"jinak za hodinu (/h), SDV v digitech           \n"
+"posledniho mista, DIF = (MAX-MIN)/AVG.      2/2\n";
 
 static const char helpTextCzGraph[] =
 "GRAF:                                          \n"
@@ -115,34 +134,52 @@ static const char helpTextCzAlarm[] =
 static const char helpTextEnDmm[] =
 "REL, dB: original functions of the K197.       \n"
 "REL 1s: help, dB 1s: alarm, REL+dB: TAG.       \n"
-"STO: statistics screen.                        \n"
-"RCL: graph, RCL 1s: DMM settings.           1/4\n"
+"STO: statistics, STO 1s: HOLD (freeze).        \n"
+"RCL: graph, RCL 1s: DMM settings.           1/6\n"
 "ALARM (dB 1s):                                 \n"
 "Watches a lower and/or an upper limit, for     \n"
 "every function separately. Off at power-up.    \n"
 "Outline above the minus: limits watched;       \n"
 "filled blinking triangle: reading outside.     \n"
-"RCL 1s on a limit: takes the live reading.  2/4\n"
+"RCL 1s on a limit: takes the live reading.  2/6\n"
+"HOLD (STO 1s, kind on the DMM settings):       \n"
+"MANUAL: freezes the reading of the press + TAG.\n"
+"AUTO HOLD: HOLD blinks, waits for a stable     \n"
+"reading; captured: HOLD + AUTO, beep, TAG.     \n"
+"Zero and OL are never captured. End: STO.      \n"
+"                                            3/6\n"
 "HELP:                                          \n"
-"REL: previous page, dB: next page.             \n"
+"RCL: next page (wraps), REL/dB: back/forward.  \n"
 "REL 1s: first page, dB 1s: last page.          \n"
 "STO: leave the help.                           \n"
 "Closes by itself after 60 s without a key.     \n"
-"                                            3/4\n"
+"                                            4/6\n"
 "SCPI:                                          \n"
 "For more information and settings use the      \n"
 "USB virtual serial port (115200 Bd)            \n"
 "and the SCPI command HELP?                     \n"
 "Help language: SYST:LANG CZ|EN                 \n"
-"Alarm: CALC:LIM:LOW|UPP|STAT|FAIL?          4/4\n";
+"Alarm: CALC:LIM:LOW|UPP|STAT|FAIL?          5/6\n"
+"SD CARD (RCL 1s: DMM settings):                \n"
+"Log to the card, a new file at every change    \n"
+"of the function and after the K197 is on again.\n"
+"SD OFF: the card may be removed. SD! blinks:   \n"
+"no card, card full or write error; the first   \n"
+"key press silences the beep.                6/6\n";
 
 static const char helpTextEnStat[] =
 "STATISTICS:                                    \n"
 "Interval, date and time, live value.           \n"
-"AVG mean, MED median, MAX and MIN over it.     \n"
-"REL: shorter interval, dB: longer interval.    \n"
-"RCL 3s: clears the whole log.                  \n"
-"STO: back to the main display.              1/1\n";
+"REL/dB: shorter/longer interval. RCL: next     \n"
+"page (1-2-3), RCL 3s: clears the whole log.    \n"
+"1: AVG mean, MED median, MAX and MIN.          \n"
+"STO: back to the main display.              1/2\n"
+"2: SDV standard deviation, REL = SDV/AVG,      \n"
+"DIF = MAX - MIN, PTS number of readings.       \n"
+"3: SEM = SDV/sqrt(PTS) - uncertainty of AVG,   \n"
+"TRD trend (fitted line) per minute (/m) up     \n"
+"to 1 MIN, else per hour (/h), SDV in digits    \n"
+"of the last place, DIF = (MAX-MIN)/AVG.     2/2\n";
 
 static const char helpTextEnGraph[] =
 "GRAPH:                                         \n"

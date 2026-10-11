@@ -209,7 +209,7 @@ void alarmTick()
     }
     if (alarmTickPhase == 0 && alarmSignal == ALARM_SIGNAL_BEEP)
     {
-        beeperBeepAsync(CONFIG_ALARM_BEEP_MS); // SYSTem:BEEP OFF keeps it silent
+        beeperAlarmAsync(CONFIG_ALARM_BEEP_MS); // v23: an alarm sound - only SYSTem:BEEP OFF keeps it silent
     }
     alarmBlinkVisible = (alarmTickPhase < visibleTicks); // blinks in step with the beeps
     alarmShow();

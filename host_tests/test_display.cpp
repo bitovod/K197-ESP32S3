@@ -410,6 +410,35 @@ int main()
         for (int y = 0; y < FakeTft::H; y++) for (int x = 0; x < FakeTft::W; x++) if (tft.t.img[y][x] != expectBuf[y][x]) badLcd++;
         CHECK(badLcd == 0, "LCD screen restored exactly after leaving the statistics screen");
     }
+    // v24 DATA HOLD: the frame shown at a given moment (history of complete frames), the current one, release
+    {
+        uint8_t a[6] = {1, 2, 3, 4, 5, 6}, b[6] = {7, 8, 9, 10, 11, 12}, c[6] = {13, 14, 15, 16, 17, 18};
+        setReadingSegments(a, 1); setIndicators(1); setUnit(KEITHLEY_UNIT_V);
+        fakeMillisOffset() += 300;
+        uint32_t tB = (uint32_t)millis();
+        setReadingSegments(b, 2); setIndicators(2); setUnit(KEITHLEY_UNIT_MV);
+        fakeMillisOffset() += 150;
+        uint32_t pressAt = (uint32_t)millis(); // B is shown here
+        fakeMillisOffset() += 150;
+        setReadingSegments(c, 3); setIndicators(4); setUnit(KEITHLEY_UNIT_OHM);
+        DisplayLcdState h;
+        CHECK(!displayHeldState(&h), "nothing held");
+        displayHoldAt(pressAt);
+        CHECK(displayHeldState(&h) && memcmp(h.segBits, b, 6) == 0 && h.dpPos == 2 && h.indicatorBits == 2 &&
+              h.unit == KEITHLEY_UNIT_MV && h.ms == tB, "HOLD at the press: the frame shown then (B), not the newest");
+        setReadingSegments(a, 1); setIndicators(1); setUnit(KEITHLEY_UNIT_V); // live goes on
+        CHECK(displayHeldState(&h) && memcmp(h.segBits, b, 6) == 0, "the held frame stays while the live one changes");
+        displayHoldAt(pressAt - 100000);
+        CHECK(displayHeldState(&h) && displayHoldIsActive(), "older than the history: the oldest frame known");
+        displayHoldCurrent();
+        CHECK(displayHeldState(&h) && memcmp(h.segBits, a, 6) == 0 && h.unit == KEITHLEY_UNIT_V, "HOLD current");
+        displayHoldRelease();
+        CHECK(!displayHoldIsActive() && !displayHeldState(&h), "released");
+        setHoldIndicator(FB_HOLD_LIT | FB_HOLD_AUTO_LIT);
+        CHECK(dispHoldInd == (FB_HOLD_LIT | FB_HOLD_AUTO_LIT), "HOLD indicator bits recorded");
+        setHoldIndicator(0);
+        printf("v24 DATA HOLD: history, hold at a moment, current, release ok\n");
+    }
     printf(failures ? "FAILURES: %d\n" : "ALL OK\n", failures);
     fflush(stdout);
     std::_Exit(failures != 0);

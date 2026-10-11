@@ -7,9 +7,9 @@
 - Arduino IDE 2.x, the Espressif **esp32** core. Board settings: ESP32S3 Dev Module (or your board),
   **PSRAM: OPI PSRAM**, **Partition scheme: Huge APP**, **USB CDC On Boot: Enabled**.
 - Libraries: Adafruit GFX + BusIO, Vrekrer SCPI parser, Adafruit_NV3007 and DS3231Centisecond (both in `libraries/`), plus the
-  core's Wire, SPI and EEPROM.
+  core's Wire, SPI, EEPROM, SD_MMC and FS.
 - The sketch folder name must equal the main file name: `firmware/ESP32S3_K197/ESP32S3_K197.ino`.
-- The version is `SCPI_IDN_FIRMWARE` in `config.h` (`C2v22` …). It is shown in the help and returned by `*IDN?`.
+- The version is `SCPI_IDN_FIRMWARE` in `config.h` (`C2v25` …). It is shown in the help and returned by `*IDN?`.
 - Size (v18): sketch ~1.28 MB of 2.0 MB, globals ~151 kB of 320 kB. The log takes the free PSRAM.
 
 ## Architecture
@@ -23,6 +23,7 @@
 | 1 | buttons | 3 | woken by the key interrupts; debounce, events, REL/dB pulses, chord detection |
 | 1 | render/UI | 2 | `uiPoll()` (screens, keys, statistics and graph in time slices) + composing a frame |
 | 1 | comm | 1 | SCPI, RTC polling, deferred EEPROM writes, debug output, light sleep while the K197 is off (`power.ino`) |
+| 1 | SD | 1 | `sdlog.ino`: follows the log by serial number and writes CSV lines to the card (SD writes can stall for 100+ ms - never in the capture task) |
 
 **Display pipeline.** The setters only record the requested state; they are cheap and safe from any task. The
 render task composes a whole 428 × 94 frame into one of two 6 bpp framebuffers (321 B per row, 64-colour palette =
@@ -48,6 +49,21 @@ waking press does nothing else) and the SPI slave is restarted.
 log never blocks the keys or the picture. The graph keeps min / max / sum / count for each of its 384 columns.
 Column borders are on whole multiples of the column length, computed in integers. The ESP32-S3 has a
 single-precision FPU only, and `double` is done in software.
+
+**Statistics pages 2 and 3** (v25): the same sliced job also keeps the sums of (value − first value) and its
+square (standard deviation without cancellation, in `double`) and the sums for a least-squares line over the RTC
+time (seconds after the first timestamped record). `datalogComputeStatsNoMedian()` does the same without the
+shared median scratch buffer, for `LOG:SDEViation?` / `LOG:TREND?` from the SCPI task.
+
+**SD card** (v23, `sdlog.ino`): an own task reads the PSRAM log by serial number, collects CSV lines in a 16 kB RAM
+buffer and writes them every 30 s, at once on a marker. A record is written only once a few newer ones exist (a
+marker may still come for the record on the display). On a card loss it goes back to the first record not yet
+synced, so the next card gets everything still in PSRAM. Problems light "SD!" and beep (`sdlogTick()`, esp_timer);
+the first key press is swallowed in `buttons.ino` and only silences the beep.
+
+**DATA HOLD** (v24, `hold.ino`): `display.ino` keeps the last 8 complete frames, so manual HOLD can freeze the
+frame that was shown at the first edge of the STO press. AUTO HOLD runs in the capture task on the displayed
+digits (counts), the marker and the beep come from an esp_timer tick (the capture task must not mark the log).
 
 **Settings** live in emulated EEPROM as one struct with a magic byte. Every new firmware version that adds fields
 appends them and migrates the previous layout, so stored settings survive updates. Front-panel changes are saved
@@ -89,6 +105,8 @@ Arduino, FreeRTOS, the TFT, GPIO, timers and EEPROM (`host_tests/stubs`):
 | `test_debuglog` | the non-blocking debug queue |
 | `test_graph` | graph columns against an independent model, scrolling, gaps, OL, axis modes (incl. ROBUST), FULL, ring wrap, markers |
 | `test_settle` | settling after a change of the function and after the K197 was switched on (the real constants) |
+| `test_sdlog` | SD logging with an in-memory card: CSV formats, file names, markers, function change, K197 off, card swap, errors, full card, alarm |
+| `test_hold` | DATA HOLD: manual, AUTO HOLD stability / zero / OL / settling / recapture / function change, indicator |
 
 The timing-based checks of `test_buttons` can fail on a heavily loaded PC; run them again.
 
@@ -99,6 +117,8 @@ The timing-based checks of `test_buttons` can fail on a heavily loaded PC; run t
 | `tools/gen_font.py` | generates `font_data.h` (antialiased fonts of the text screens; default JetBrains Mono Bold, zero without the dot) |
 | `tools/gen_pixel_font.py` | generates `font_pixel.h` (5×7 font of the graph, from Adafruit GFX) |
 | `tools/gen_tag_shape.py` | generates `tag_shape.h` ("TAG" in the style of the original indicators, DejaVu Sans Condensed Bold) |
+| `tools/gen_sd_shape.py` | generates `sd_shape.h` ("SD!" in place of BAT, same style) |
+| `tools/gen_hold_shape.py` | generates `hold_shape.h` ("HOLD" / "AUTO" in place of STO / RCL, squeezed to the indicator width) |
 | `tools/make_screenshots.sh` | renders `docs/images/*.png` with the real drawing code |
 
 ## Code conventions
@@ -108,8 +128,8 @@ Display layout changes are tried as preview pictures first.
 
 ## Ideas / to do
 
-- SD card: a continuous binary journal, reload into PSRAM after power-up, CSV export of the window shown in the
-  graph, `MMEMory:*` commands.
+- SD card: format the card from the DMM settings, reload the last file into PSRAM after power-up, CSV export of the
+  window shown in the graph.
 - Calibration screen for the visible area behind the bezel.
 - Battery option (the original Model 1978 pack), temperature sensors, a passive piezo with several tones.
 
@@ -121,10 +141,10 @@ Display layout changes are tried as preview pictures first.
 
 - Arduino IDE 2.x, jádro **esp32** od Espressifu. Nastavení desky: ESP32S3 Dev Module (nebo vaše deska),
   **PSRAM: OPI PSRAM**, **Partition scheme: Huge APP**, **USB CDC On Boot: Enabled**.
-- Knihovny: Adafruit GFX + BusIO, Vrekrer SCPI parser, Adafruit_NV3007 a DS3231Centisecond (obě v `libraries/`) a Wire, SPI
-  a EEPROM z jádra.
+- Knihovny: Adafruit GFX + BusIO, Vrekrer SCPI parser, Adafruit_NV3007 a DS3231Centisecond (obě v `libraries/`) a Wire,
+  SPI, EEPROM, SD_MMC a FS z jádra.
 - Název složky sketche musí odpovídat hlavnímu souboru: `firmware/ESP32S3_K197/ESP32S3_K197.ino`.
-- Verze je `SCPI_IDN_FIRMWARE` v `config.h` (`C2v22` …). Zobrazuje se v nápovědě a vrací ji `*IDN?`.
+- Verze je `SCPI_IDN_FIRMWARE` v `config.h` (`C2v25` …). Zobrazuje se v nápovědě a vrací ji `*IDN?`.
 - Velikost (v18): sketch asi 1,28 MB z 2,0 MB, globální proměnné asi 151 kB z 320 kB. Log zabere volnou PSRAM.
 
 ## Architektura
@@ -138,6 +158,7 @@ Display layout changes are tried as preview pictures first.
 | 1 | buttons | 3 | probouzí ho přerušení tlačítek; odrušení zákmitů, události, pulsy REL/dB, detekce akordu |
 | 1 | render/UI | 2 | `uiPoll()` (obrazovky, tlačítka, statistika a graf po časových dílech) + skládání snímku |
 | 1 | comm | 1 | SCPI, čtení RTC, odložené zápisy do EEPROM, ladicí výstup, light sleep při vypnutém K197 (`power.ino`) |
+| 1 | SD | 1 | `sdlog.ino`: sleduje log podle sériových čísel a zapisuje řádky CSV na kartu (zápis na SD se může zdržet o 100+ ms - nikdy v tasku příjmu) |
 
 **Vykreslování.** Settery jen zaznamenají požadovaný stav; jsou levné a bezpečné z libovolného tasku. Render task
 složí celý snímek 428 × 94 do jednoho ze dvou 6bitových framebufferů (321 B na řádek, paleta 64 barev = pozadí +
@@ -163,6 +184,21 @@ uvolnění, takže probouzecí stisk nic dalšího neudělá) a SPI slave se zno
 nikdy nezablokuje tlačítka ani obraz. Graf si pro každý ze 384 sloupců drží min / max / součet / počet. Hranice
 sloupců leží na celých násobcích délky sloupce a počítají se v celých číslech. ESP32-S3 má FPU jen pro single
 precision a `double` počítá softwarově.
+
+**Strany 2 a 3 statistiky** (v25): stejný výpočet po dílech si drží i součty (hodnota − první hodnota) a jejich
+čtverců (směrodatná odchylka bez ztráty přesnosti odečítáním, v `double`) a součty pro přímku metodou nejmenších
+čtverců podle času z RTC (sekundy od prvního záznamu s časem). `datalogComputeStatsNoMedian()` počítá totéž bez
+sdíleného pomocného bufferu mediánu, pro `LOG:SDEViation?` / `LOG:TREND?` z tasku SCPI.
+
+**SD karta** (v23, `sdlog.ino`): vlastní task čte log v PSRAM podle sériových čísel, sbírá řádky CSV do 16kB bufferu
+v RAM a zapisuje je každých 30 s, při markeru hned. Záznam se zapíše až ve chvíli, kdy existuje pár novějších
+(k záznamu na displeji ještě může přijít marker). Při ztrátě karty se vrátí k prvnímu nesynchronizovanému záznamu,
+takže další karta dostane vše, co je ještě v PSRAM. Potíže rozsvítí „SD!“ a pípají (`sdlogTick()`, esp_timer);
+první stisk tlačítka se v `buttons.ino` spolkne a jen umlčí pípání.
+
+**DATA HOLD** (v24, `hold.ino`): `display.ino` si drží posledních 8 kompletních snímků, takže ruční HOLD zmrazí
+snímek zobrazený při první hraně stisku STO. AUTO HOLD běží v tasku příjmu nad zobrazenými číslicemi (v digitech),
+marker a pípnutí obstará tik esp_timer (task příjmu nesmí do logu zapisovat markery).
 
 **Nastavení** je v emulované EEPROM jako jedna struktura s magickým bajtem. Každá nová verze firmwaru, která přidá
 položky, je připojí na konec a starší rozložení převede, takže uložené nastavení přežije aktualizace. Změny z panelu
@@ -202,6 +238,8 @@ Arduina, FreeRTOS, displeje, GPIO, časovačů a EEPROM (`host_tests/stubs`):
 | `test_debuglog` | neblokující fronta ladicích zpráv |
 | `test_graph` | sloupce grafu proti nezávislému modelu, posun, mezery, OL, režimy osy (vč. ROBUST), FULL, přetočení kruhu, markery |
 | `test_settle` | ustalování po změně funkce a po zapnutí K197 (skutečné konstanty) |
+| `test_sdlog` | záznam na SD s kartou v paměti: formáty CSV, jména souborů, markery, změna funkce, vypnutý K197, výměna karty, chyby, plná karta, alarm |
+| `test_hold` | DATA HOLD: ruční, AUTO HOLD (ustálení, nula, OL, ustalování, nové zachycení, změna funkce), indikátor |
 
 Časové kontroly v `test_buttons` mohou na hodně vytíženém PC selhat; stačí je spustit znovu.
 
@@ -212,6 +250,8 @@ Arduina, FreeRTOS, displeje, GPIO, časovačů a EEPROM (`host_tests/stubs`):
 | `tools/gen_font.py` | generuje `font_data.h` (vyhlazené fonty textových obrazovek; výchozí JetBrains Mono Bold, nula bez tečky) |
 | `tools/gen_pixel_font.py` | generuje `font_pixel.h` (font 5×7 pro graf, z Adafruit GFX) |
 | `tools/gen_tag_shape.py` | generuje `tag_shape.h` („TAG“ ve stylu původních indikátorů, DejaVu Sans Condensed Bold) |
+| `tools/gen_sd_shape.py` | generuje `sd_shape.h` („SD!“ na místě BAT, stejný styl) |
+| `tools/gen_hold_shape.py` | generuje `hold_shape.h` („HOLD“ / „AUTO“ na místě STO / RCL, zúžené na šířku indikátoru) |
 | `tools/make_screenshots.sh` | vykreslí `docs/images/*.png` skutečným kreslicím kódem |
 
 ## Konvence kódu
@@ -221,7 +261,7 @@ jmen. Změny rozvržení displeje se nejdřív zkoušejí na náhledových obrá
 
 ## Nápady / k dodělání
 
-- SD karta: průběžný binární žurnál, načtení zpět do PSRAM po zapnutí, export CSV okna zobrazeného v grafu,
-  příkazy `MMEMory:*`.
+- SD karta: formátování karty z nastavení DMM, načtení posledního souboru zpět do PSRAM po zapnutí, export CSV
+  okna zobrazeného v grafu.
 - Kalibrační obrazovka viditelné plochy za rámečkem.
 - Bateriové napájení (původní sada Model 1978), teplotní čidla, pasivní piezo s více tóny.

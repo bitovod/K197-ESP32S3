@@ -8,6 +8,7 @@
 #include "serial_out.h"
 #include "debuglog.h"
 #include "ui.h" // v22: back to the main display before sleeping
+#include "sdlog.h" // v23: no light sleep while an SD file is open
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
@@ -190,6 +191,10 @@ void powerPoll()
     if (settingsSavePending())
     {
         return; // the deferred EEPROM write first (settingsPoll() in the same loop)
+    }
+    if (!sdlogReadyForSleep())
+    {
+        return; // v23: the SD task closes the file first (it does so as soon as the K197 is off)
     }
     if (uiGetScreen() != UI_SCREEN_LCD)
     {

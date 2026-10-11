@@ -31,6 +31,22 @@ static void refCompose(const KeithleyTheme &th, const FbLcdScene &s)
                     KEITHLEY_TAG_W, KEITHLEY_TAG_H, s.tagLit ? th.indicator : th.ghost);
             continue;
         }
+        if ((i == KEITHLEY_IND_STO || i == KEITHLEY_IND_RCL) && !on)
+        {
+            // v24: "HOLD" / "AUTO" stand in place of STO / RCL unless the K197 lights them
+            bool isHold = (i == KEITHLEY_IND_STO);
+            bool lit = (s.hold & (isHold ? FB_HOLD_LIT : FB_HOLD_AUTO_LIT)) != 0;
+            refMask(th, isHold ? keithley_hold_mask : keithley_auto_mask, keithley_ind_x[i], keithley_ind_y[i],
+                    KEITHLEY_HOLD_W, KEITHLEY_HOLD_H, lit ? th.indicator : th.ghost);
+            continue;
+        }
+        if (i == KEITHLEY_IND_BAT && !on)
+        {
+            // v23: "SD!" stands in place of BAT unless the K197 lights BAT
+            refMask(th, keithley_sd_mask, keithley_ind_x[i] + (keithley_ind_w[i] - KEITHLEY_SD_W) / 2, keithley_ind_y[i],
+                    KEITHLEY_SD_W, KEITHLEY_SD_H, s.sdLit ? th.indicator : th.ghost);
+            continue;
+        }
         uint16_t onColor = (i == KEITHLEY_IND_AC) ? th.bright : th.indicator;
         refMask(th, keithley_ind_mask_table[i], keithley_ind_x[i], keithley_ind_y[i], keithley_ind_w[i], keithley_ind_h[i], on ? onColor : th.ghost);
     }
@@ -161,6 +177,8 @@ int main()
             FbLcdScene s;
             memcpy(s.segBits, cases[ci].seg, 6);
             s.dpPos = cases[ci].dp; s.indicatorBits = cases[ci].ind; s.unit = cases[ci].unit;
+            s.sdLit = (ci == 2 || ci == 3); // v23: lit SD! (case 3: BAT lit by the K197 wins)
+            s.hold = (uint8_t)(ci == 0 ? FB_HOLD_LIT : (ci == 2 ? FB_HOLD_LIT | FB_HOLD_AUTO_LIT : 0)); // v24
             fbComposeLcd(bufA, s);
             refCompose(th, s);
             static uint16_t out[FB_WIDTH * FB_HEIGHT];
@@ -358,6 +376,101 @@ int main()
         }
     }
 
+    // 8b. v25 statistics pages 2 and 3: the top line is the same on every page, the columns never touch, page 3's
+    // legends start where page 1's do
+    {
+        static uint8_t pages[3][FB_BYTES];
+        FbStatsScene sc;
+        memset(&sc, 0, sizeof(sc));
+        strcpy(sc.live, "-1.23456"); strcpy(sc.unit, "V"); strcpy(sc.interval, "1 HOUR"); strcpy(sc.dateTime, "14:03:07 11.10.26");
+        strcpy(sc.average, "-1.23451"); strcpy(sc.median, "-1.23452"); strcpy(sc.maximum, "-1.23438"); strcpy(sc.minimum, "-1.23467");
+        // the widest texts each field can get
+        strcpy(sc.sdev, "--.----"); snprintf(sc.sdevUnit, sizeof(sc.sdevUnit), "m%c", FONT_CH_OHM);
+        strcpy(sc.rel, "--.----"); strcpy(sc.relUnit, "ppm");
+        strcpy(sc.dif, "-1.99999"); strcpy(sc.pts, "75600");
+        strcpy(sc.sem, "888"); snprintf(sc.semUnit, sizeof(sc.semUnit), "%cV", FONT_CH_MICRO);
+        strcpy(sc.trend, "-888"); snprintf(sc.trendUnit, sizeof(sc.trendUnit), "k%c/h", FONT_CH_OHM);
+        strcpy(sc.sdevDigits, "888"); strcpy(sc.difRel, "0.888"); strcpy(sc.difRelUnit, "ppm");
+        for (int p = 0; p < FB_STATS_PAGE_COUNT; p++)
+        {
+            sc.page = (uint8_t)p;
+            fbComposeStats(pages[p], sc);
+        }
+        FbStatsRows rows = fbStatsRows();
+        int topRows = rows.baselineTop + 3;
+        bool sameTop = true;
+        for (int y = 0; y < topRows; y++)
+            for (int x = 0; x < FB_WIDTH; x++)
+                if (fbGet(pages[1], x, y) != fbGet(pages[0], x, y) || fbGet(pages[2], x, y) != fbGet(pages[0], x, y)) sameTop = false;
+        CHECK(sameTop, "the top line is the same on all three pages");
+        for (int p = 1; p < 3; p++)
+        {
+            int lit = 0, diff = 0;
+            for (int y = topRows; y < FB_HEIGHT; y++)
+                for (int x = 0; x < FB_WIDTH; x++)
+                {
+                    if (fbGet(pages[p], x, y) != 0) lit++;
+                    if (fbGet(pages[p], x, y) != fbGet(pages[0], x, y)) diff++;
+                }
+            CHECK(lit > 2000 && diff > 1000, "pages 2 and 3 draw their own rows");
+            // an empty gap of at least 8 columns between the two cells of each row
+            for (int row = 0; row < 2; row++)
+            {
+                int base = row ? rows.baselineRow2 : rows.baselineRow1;
+                int y0 = base - FONT_STAT.digitHeight - 2, y1 = base + 4;
+                int run = 0, best = 0;
+                for (int x = FB_WIDTH / 3; x < 2 * FB_WIDTH / 3; x++)
+                {
+                    bool ink = false;
+                    for (int y = y0; y <= y1 && y < FB_HEIGHT; y++) if (fbGet(pages[p], x, y) != 0) ink = true;
+                    run = ink ? 0 : run + 1;
+                    if (run > best) best = run;
+                }
+                printf("page %d row %d: gap between the columns %d px\n", p + 1, row + 1, best);
+                CHECK(best >= 8, "the two cells of a row do not touch");
+            }
+        }
+        // the right legends stay at one fixed place (where a two-character unit puts MAX / MIN) on every page and for
+        // every unit (flipping the pages / units on the instrument made them jump); the left numbers
+        // end where page 1's end
+        const char *units[] = {"V", "mV", "kO", "uA", "dB"};
+        for (const char *u : units)
+        {
+            char unit[8];
+            snprintf(unit, sizeof(unit), "%s", u);
+            if (unit[1] == 'O') unit[1] = FONT_CH_OHM;
+            if (unit[0] == 'u') unit[0] = FONT_CH_MICRO;
+            snprintf(sc.unit, sizeof(sc.unit), "%s", unit);
+            int legendX[3][2];
+            for (int p = 0; p < 3; p++)
+            {
+                sc.page = (uint8_t)p;
+                fbComposeStats(pages[p], sc);
+                for (int row = 0; row < 2; row++)
+                {
+                    int base = row ? rows.baselineRow2 : rows.baselineRow1;
+                    legendX[p][row] = -1;
+                    // the leftmost ink of the right half, in the legend's rows (legend font, on the baseline)
+                    for (int x = FB_WIDTH / 2 + 4; x < FB_WIDTH && legendX[p][row] < 0; x++)
+                        for (int y = base - FONT_LEGEND.digitHeight; y < base; y++)
+                            if (fbGet(pages[p], x, y) != 0) { legendX[p][row] = x; break; }
+                }
+            }
+            int expected = fbStatsRightLegendX(); // v25: one fixed place for every unit and page
+            for (int p = 0; p < 3; p++)
+                for (int row = 0; row < 2; row++)
+                {
+                    if (abs(legendX[p][row] - expected) > 2)
+                        printf("unit %s page %d row %d: legend ink at %d, page 1 legend at %d\n", u, p + 1, row + 1, legendX[p][row], expected);
+                    CHECK(abs(legendX[p][row] - expected) <= 2, "the right legends start where MAX / MIN start, on every page");
+                }
+        }
+        snprintf(sc.unit, sizeof(sc.unit), "V");
+        FbStatsCell left = fbStatsCellLayout(false, "-1.23451", "V");
+        int legendWidth = fbTextWidth(FONT_LEGEND, "MAX");
+        CHECK(left.numberRight == legendWidth + FB_STATS_GAP_LEGEND + FB_STATS_NUMBER_CHARS * FONT_STAT.advance, "page 3 left number edge = page 1");
+    }
+
     // 9. theme for the user interface screens: light text on dark, always
     {
         int turned = 0;
@@ -384,6 +497,58 @@ int main()
         }
         printf("themes turned around for the statistics screen: %d of %d\n", turned, (int)themeCount);
         CHECK(turned >= 1, "at least one light theme exists to exercise this");
+    }
+    // 10. v23: SD! in place of BAT - ghost / lit differ only inside the BAT box; BAT lit by the K197 wins
+    {
+        static uint8_t bufB[FB_BYTES];
+        FbLcdScene s;
+        memset(s.segBits, 0, 6); s.dpPos = -1; s.indicatorBits = 0; s.unit = KEITHLEY_UNIT_NONE;
+        s.sdLit = false;
+        fbComposeLcd(bufA, s);
+        s.sdLit = true;
+        fbComposeLcd(bufB, s);
+        int bx = keithley_ind_x[KEITHLEY_IND_BAT], by = keithley_ind_y[KEITHLEY_IND_BAT];
+        int bw = keithley_ind_w[KEITHLEY_IND_BAT], bh = keithley_ind_h[KEITHLEY_IND_BAT];
+        int inside = 0, outside = 0;
+        for (int y = 0; y < FB_HEIGHT; y++)
+            for (int x = 0; x < FB_WIDTH; x++)
+                if (fbGet(bufA, x, y) != fbGet(bufB, x, y))
+                {
+                    if (x >= bx && x < bx + bw && y >= by && y < by + bh) inside++; else outside++;
+                }
+        printf("SD! lit vs ghost: %d pixels differ inside the BAT box, %d outside\n", inside, outside);
+        CHECK(inside > 100 && outside == 0, "SD! changes only the BAT place");
+        s.indicatorBits = (1u << KEITHLEY_IND_BAT);
+        s.sdLit = false;
+        fbComposeLcd(bufA, s);
+        s.sdLit = true;
+        fbComposeLcd(bufB, s);
+        CHECK(memcmp(bufA, bufB, FB_BYTES) == 0, "BAT lit by the K197: SD! does not show");
+    }
+    // 11. v23: scroll marks of the settings screens (top right = more above, bottom = more below)
+    {
+        static uint8_t bufB[FB_BYTES];
+        FbSetupScene sc;
+        memset(&sc, 0, sizeof(sc));
+        strcpy(sc.title, "DMM - NASTAVENI");
+        for (int r = 0; r < FB_SETUP_ROWS; r++) { strcpy(sc.labels[r], "X"); strcpy(sc.values[r], "Y"); }
+        sc.rowCount = FB_SETUP_ROWS;
+        fbComposeSetup(bufA, sc);
+        sc.moreAbove = true;
+        sc.moreBelow = true;
+        fbComposeSetup(bufB, sc);
+        int topDiff = 0, bottomDiff = 0, elsewhere = 0;
+        int midY = (fbHelpBaseline(1) + fbHelpBaseline(FB_SETUP_ROWS)) / 2;
+        for (int y = 0; y < FB_HEIGHT; y++)
+            for (int x = 0; x < FB_WIDTH; x++)
+                if (fbGet(bufA, x, y) != fbGet(bufB, x, y))
+                {
+                    if (x < FB_WIDTH - FB_SETUP_SCROLL_W - 3) elsewhere++;
+                    else if (y < midY) topDiff++;
+                    else bottomDiff++;
+                }
+        printf("scroll marks: %d px at the top, %d px at the bottom, %d elsewhere\n", topDiff, bottomDiff, elsewhere);
+        CHECK(topDiff >= 15 && bottomDiff >= 15 && elsewhere == 0, "scroll marks at the right edge only");
     }
     printf(failures ? "FAILURES: %d\n" : "ALL OK\n", failures);
     return failures != 0;

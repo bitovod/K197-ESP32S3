@@ -11,7 +11,7 @@
 //   sends a configuration command, so the cost does not matter.
 // - Settings changed from the front panel (the statistics interval,
 //   v14 the graph settings, v15 theme/beep/language from the DMM settings
-//   screen) are saved DEFERRED: the setter only updates the RAM
+//   screen, v23 SD logging and CSV format) are saved DEFERRED: the setter only updates the RAM
 //   value and remembers when it changed; settingsPoll() (comm task,
 //   core 1) commits once the value has been left alone for
 //   CONFIG_SETTINGS_DEFERRED_SAVE_MS. Stepping through the intervals
@@ -106,7 +106,8 @@ void settingsBegin()
     memset(&settingsCommitted, 0xFF, sizeof(settingsCommitted));
     if (settings.magic == SETTINGS_MAGIC_V9 || settings.magic == SETTINGS_MAGIC_V11 || settings.magic == SETTINGS_MAGIC_V13 ||
         settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15 || settings.magic == SETTINGS_MAGIC_V16 ||
-        settings.magic == SETTINGS_MAGIC_V17 || settings.magic == SETTINGS_MAGIC_V21)
+        settings.magic == SETTINGS_MAGIC_V17 || settings.magic == SETTINGS_MAGIC_V21 || settings.magic == SETTINGS_MAGIC_V22 ||
+        settings.magic == SETTINGS_MAGIC_V23)
     {
         // Firmware update: keep everything, give the fields added since
         // their defaults (each step adds what its layout lacked).
@@ -130,21 +131,34 @@ void settingsBegin()
             // v21: same SUPP span as before, under its new index (+-1, +-2, +-5 were added in front)
             settings.graphSpan = (uint8_t)(settings.graphSpan + GRAPH_SPANS_ADDED_V21);
         }
-        else if (settings.magic != SETTINGS_MAGIC_V21)
+        else if (settings.magic != SETTINGS_MAGIC_V21 && settings.magic != SETTINGS_MAGIC_V22 &&
+                 settings.magic != SETTINGS_MAGIC_V23)
         {
             settingsGraphDefaults();
         }
         if (settings.magic != SETTINGS_MAGIC_V15 && settings.magic != SETTINGS_MAGIC_V16 && settings.magic != SETTINGS_MAGIC_V17 &&
-            settings.magic != SETTINGS_MAGIC_V21)
+            settings.magic != SETTINGS_MAGIC_V21 && settings.magic != SETTINGS_MAGIC_V22 && settings.magic != SETTINGS_MAGIC_V23)
         {
             settings.language = CONFIG_DEFAULT_LANGUAGE;
         }
-        if (settings.magic != SETTINGS_MAGIC_V17 && settings.magic != SETTINGS_MAGIC_V21)
+        if (settings.magic != SETTINGS_MAGIC_V17 && settings.magic != SETTINGS_MAGIC_V21 && settings.magic != SETTINGS_MAGIC_V22 &&
+            settings.magic != SETTINGS_MAGIC_V23)
         {
             settingsAlarmDefaults(); // v17: every older layout lacks the alarm
         }
-        settings.rtcAging = 0; // v22: every older layout lacks it - the chip keeps its own value
-        settings.rtcAgingSet = 0;
+        if (settings.magic != SETTINGS_MAGIC_V22 && settings.magic != SETTINGS_MAGIC_V23)
+        {
+            settings.rtcAging = 0; // v22: every older layout lacks it - the chip keeps its own value
+            settings.rtcAgingSet = 0;
+        }
+        if (settings.magic != SETTINGS_MAGIC_V23)
+        {
+            // v23: every older layout lacks the SD card fields; the old beepEnabled 0/1 already are
+            // SETTINGS_BEEP_OFF / SETTINGS_BEEP_ALL
+            settings.sdEnabled = CONFIG_DEFAULT_SD_ENABLED ? 1 : 0;
+            settings.sdCsvFormat = CONFIG_DEFAULT_SD_CSV_FORMAT;
+        }
+        settings.holdMode = CONFIG_DEFAULT_HOLD_MODE; // v24: every older layout lacks it
         settings.magic = SETTINGS_MAGIC;
         settingsSave();
     }
@@ -160,7 +174,7 @@ void settingsBegin()
         settings.autoIntervalSeconds = CONFIG_DEFAULT_AUTO_INTERVAL;
         settings.theme = CONFIG_DEFAULT_THEME;
         settings.debugEnabled = CONFIG_DEFAULT_DEBUG_ENABLED ? 1 : 0;
-        settings.beepEnabled = CONFIG_DEFAULT_BEEP_ENABLED ? 1 : 0;
+        settings.beepEnabled = CONFIG_DEFAULT_BEEP_MODE;
         settings.commPort = CONFIG_DEFAULT_COMM_PORT;
         settings.displayYOffset = CONFIG_DEFAULT_DISPLAY_Y_OFFSET;
         settings.statsInterval = CONFIG_UI_STATS_DEFAULT_INTERVAL_INDEX;
@@ -170,6 +184,9 @@ void settingsBegin()
         settingsAlarmDefaults();
         settings.rtcAging = 0;
         settings.rtcAgingSet = 0;
+        settings.sdEnabled = CONFIG_DEFAULT_SD_ENABLED ? 1 : 0;
+        settings.sdCsvFormat = CONFIG_DEFAULT_SD_CSV_FORMAT;
+        settings.holdMode = CONFIG_DEFAULT_HOLD_MODE;
         settingsSave();
     }
     else
@@ -265,15 +282,16 @@ void settingsSetDebugEnabled(bool enabled)
     settingsSave();
 }
 
-bool settingsGetBeepEnabled()
+uint8_t settingsGetBeepMode()
 {
-    return settings.beepEnabled != 0;
+    uint8_t mode = settings.beepEnabled;
+    return (mode < SETTINGS_BEEP_MODES) ? mode : SETTINGS_BEEP_ALL;
 }
 
-void settingsSetBeepEnabled(bool enabled)
+void settingsSetBeepMode(uint8_t mode)
 {
     portENTER_CRITICAL(&settingsMux);
-    settings.beepEnabled = enabled ? 1 : 0;
+    settings.beepEnabled = mode;
     portEXIT_CRITICAL(&settingsMux);
     settingsSave();
 }
@@ -400,10 +418,10 @@ void settingsSetThemeDeferred(uint8_t theme)
     portEXIT_CRITICAL(&settingsMux);
 }
 
-void settingsSetBeepEnabledDeferred(bool enabled)
+void settingsSetBeepModeDeferred(uint8_t mode)
 {
     portENTER_CRITICAL(&settingsMux);
-    settings.beepEnabled = enabled ? 1 : 0;
+    settings.beepEnabled = mode;
     settingsMarkPendingLocked();
     portEXIT_CRITICAL(&settingsMux);
 }
@@ -494,6 +512,67 @@ void settingsSetAlarmSignalDeferred(uint8_t signal)
 {
     portENTER_CRITICAL(&settingsMux);
     settings.alarmSignal = signal;
+    settingsMarkPendingLocked();
+    portEXIT_CRITICAL(&settingsMux);
+}
+
+// ---- v23: SD card logging ----
+
+bool settingsGetSdEnabled()
+{
+    return settings.sdEnabled != 0;
+}
+
+void settingsSetSdEnabled(bool enabled)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.sdEnabled = enabled ? 1 : 0;
+    portEXIT_CRITICAL(&settingsMux);
+    settingsSave();
+}
+
+void settingsSetSdEnabledDeferred(bool enabled)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.sdEnabled = enabled ? 1 : 0;
+    settingsMarkPendingLocked();
+    portEXIT_CRITICAL(&settingsMux);
+}
+
+uint8_t settingsGetSdCsvFormat()
+{
+    uint8_t format = settings.sdCsvFormat;
+    return (format < SETTINGS_CSV_FORMATS) ? format : SETTINGS_CSV_SEMICOLON;
+}
+
+void settingsSetSdCsvFormat(uint8_t format)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.sdCsvFormat = format;
+    portEXIT_CRITICAL(&settingsMux);
+    settingsSave();
+}
+
+void settingsSetSdCsvFormatDeferred(uint8_t format)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.sdCsvFormat = format;
+    settingsMarkPendingLocked();
+    portEXIT_CRITICAL(&settingsMux);
+}
+
+// ---- v24: DATA HOLD ----
+
+uint8_t settingsGetHoldMode()
+{
+    uint8_t mode = settings.holdMode;
+    return (mode < SETTINGS_HOLD_MODES) ? mode : SETTINGS_HOLD_MANUAL;
+}
+
+void settingsSetHoldModeDeferred(uint8_t mode)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.holdMode = mode;
     settingsMarkPendingLocked();
     portEXIT_CRITICAL(&settingsMux);
 }

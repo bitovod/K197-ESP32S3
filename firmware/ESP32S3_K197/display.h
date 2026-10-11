@@ -142,6 +142,36 @@ void setAlarmIndicator(uint8_t state);
 // v18: "TAG" in place of REM lit (a marker was just set, marker.ino) or ghost.
 void setTagIndicator(bool lit);
 
+// v23: "SD!" in place of BAT lit (an SD card problem, blinking - sdlog.ino) or
+// ghost. Wakes the render task only while the LCD replica is shown.
+void setSdIndicator(bool lit);
+
+// ---- v24: DATA HOLD (hold.h) ----
+// One complete frame of the LCD replica (what setReadingSegments(),
+// setIndicators() and setUnit() recorded) and when it was completed.
+// In this header for the Arduino prototype rule (displayHeldState()).
+struct DisplayLcdState
+{
+    uint8_t segBits[KEITHLEY_DIGIT_COUNT];
+    int8_t dpPos;
+    uint16_t indicatorBits;
+    uint8_t unit;
+    uint32_t ms; // millis() when the frame was completed
+};
+// Freeze the LCD replica on the frame that was SHOWN at millis() atMs (one of
+// the last 8 frames; older: the oldest of them) / on the current frame;
+// release = live again. The live state keeps being recorded meanwhile, and
+// the other screens are not affected. Any task.
+void displayHoldAt(uint32_t atMs);
+void displayHoldCurrent();
+void displayHoldRelease();
+bool displayHoldIsActive();
+// The held frame (false if nothing is held) - host tests, SCPI.
+bool displayHeldState(DisplayLcdState *out);
+// "HOLD" / "AUTO" in place of STO / RCL lit (FB_HOLD_* bits, framebuffer.h)
+// or ghost. Wakes the render task only while the LCD replica is shown.
+void setHoldIndicator(uint8_t bits);
+
 const char *currentThemeName();
 
 // Switches the active color theme (see themes[] in config.h). `theme`

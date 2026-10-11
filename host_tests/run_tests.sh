@@ -42,3 +42,9 @@ g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-typ
 echo "== v22: settling after a function change / after the K197 was switched on (real constants)"
 g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-type-limits -Istubs -I$B test_settle.cpp -o /tmp/k197_test_settle
 /tmp/k197_test_settle
+echo "== v23: sdlog.ino - SD card logging with an in-memory card: CSV formats, files, markers, function change, K197 off, card swap, errors, alarm"
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-type-limits -Istubs -I$B test_sdlog.cpp -o /tmp/k197_test_sdlog
+/tmp/k197_test_sdlog
+echo "== v24: hold.ino - DATA HOLD: manual, AUTO HOLD stability / zero / OL / settling / recapture / function change, indicator"
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Istubs -I"$SKETCH" test_hold.cpp -o /tmp/k197_test_hold
+/tmp/k197_test_hold

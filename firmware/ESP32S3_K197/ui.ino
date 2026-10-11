@@ -16,6 +16,8 @@
 #include "graph.h"
 #include "alarm.h"
 #include "marker.h"
+#include "sdlog.h" // v23: SD card state on the DMM settings screen
+#include "hold.h"  // v24: DATA HOLD (STO held on the LCD)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -43,6 +45,9 @@ static uint8_t uiInterval = CONFIG_UI_STATS_DEFAULT_INTERVAL_INDEX;
 // last finished statistics job.
 static FbStatsScene uiScene;
 static uint32_t uiProcessedSeq = 0;
+// v25: page of the statistics screen (FB_STATS_PAGE_*): RCL click cycles it, kept while the interval changes or the
+// help is open, back to page 1 whenever the statistics are opened anew.
+static uint8_t uiStatsPage = FB_STATS_PAGE_MAIN;
 
 // The statistics job: a computation over the log that is advanced a
 // slice per uiPoll() so that even the whole log (hundreds of thousands
@@ -101,6 +106,10 @@ static uint8_t uiGraphSetupRow = 0; // cursor line of the graph settings screen 
 // CONFIG_UI_DMM_SETUP_HOLD_MS: the graph) or a hold (the DMM settings).
 static bool uiLcdRclArmed = false;
 static uint8_t uiDmmSetupRow = 0; // cursor line of the DMM settings screen
+static uint8_t uiDmmSetupTop = 0; // v23: first line shown (the list is longer than the screen)
+static uint8_t uiDmmSdViewShown = 0xFE; // v23: SD state the DMM settings screen last showed
+static bool uiLcdStoArmed = false;      // v24: STO pressed on the LCD - click (statistics / end HOLD) or hold (HOLD)
+static bool uiLcdStoFrozen = false;     // v24: manual HOLD preview at the press (not confirmed yet)
 // v15: last button activity on a settings screen (graph or DMM) - after
 // CONFIG_UI_HELP_TIMEOUT_MS without any it returns to its parent screen,
 // like the help closes.
@@ -188,12 +197,36 @@ void uiFillStatsScene(FbStatsScene *scene)
     *scene = uiScene;
 }
 
+uint8_t uiGetStatsPage()
+{
+    return uiStatsPage;
+}
+
+// v25: the units of pages 2 and 3 for a context, with no numbers (placeholders).
+static void uiSetPlaceholdersExtra()
+{
+    const char *perTime = (uiCtxInterval <= CONFIG_UI_TREND_PER_MINUTE_MAX_INTERVAL) ? "/m" : "/h";
+    uiFormatEngineering(uiScene.sdev, sizeof(uiScene.sdev), uiScene.sdevUnit, sizeof(uiScene.sdevUnit), NAN, uiCtxUnit,
+                        false, "", UI_PLACEHOLDER);
+    uiFormatRatio(uiScene.rel, sizeof(uiScene.rel), uiScene.relUnit, sizeof(uiScene.relUnit), NAN, UI_PLACEHOLDER);
+    snprintf(uiScene.dif, sizeof(uiScene.dif), UI_PLACEHOLDER);
+    snprintf(uiScene.pts, sizeof(uiScene.pts), UI_PLACEHOLDER);
+    uiFormatEngineering(uiScene.sem, sizeof(uiScene.sem), uiScene.semUnit, sizeof(uiScene.semUnit), NAN, uiCtxUnit,
+                        false, "", UI_PLACEHOLDER_SHORT);
+    uiFormatEngineering(uiScene.trend, sizeof(uiScene.trend), uiScene.trendUnit, sizeof(uiScene.trendUnit), NAN,
+                        uiCtxUnit, true, perTime, UI_PLACEHOLDER_SHORT);
+    snprintf(uiScene.sdevDigits, sizeof(uiScene.sdevDigits), UI_PLACEHOLDER_SHORT);
+    uiFormatRatio(uiScene.difRel, sizeof(uiScene.difRel), uiScene.difRelUnit, sizeof(uiScene.difRelUnit), NAN,
+                  UI_PLACEHOLDER_SHORT);
+}
+
 static void uiSetPlaceholders()
 {
     snprintf(uiScene.average, sizeof(uiScene.average), UI_PLACEHOLDER);
     snprintf(uiScene.median, sizeof(uiScene.median), UI_PLACEHOLDER);
     snprintf(uiScene.maximum, sizeof(uiScene.maximum), UI_PLACEHOLDER);
     snprintf(uiScene.minimum, sizeof(uiScene.minimum), UI_PLACEHOLDER);
+    uiSetPlaceholdersExtra();
 }
 
 // Writes the time and date of the RTC into the scene ("14:03:07 06.10.26"),
@@ -250,6 +283,38 @@ static void uiPublishStats()
     else
     {
         snprintf(uiScene.median, sizeof(uiScene.median), UI_PLACEHOLDER);
+    }
+
+    // v25 pages 2 and 3
+    uiSetPlaceholdersExtra(); // units for the context, "no number" where the result has none
+    bool relative = (uiCtxUnit != KEITHLEY_UNIT_DB && stats.average != 0.0); // a ratio to a dB level means nothing
+    double spread = stats.maximum - stats.minimum;
+    uiFormatNumber(uiScene.dif, sizeof(uiScene.dif), spread, uiCtxUnit, uiCtxDecimals);
+    snprintf(uiScene.pts, sizeof(uiScene.pts), "%lu", (unsigned long)stats.count);
+    if (relative)
+    {
+        uiFormatRatio(uiScene.difRel, sizeof(uiScene.difRel), uiScene.difRelUnit, sizeof(uiScene.difRelUnit),
+                      spread / fabs(stats.average), UI_PLACEHOLDER_SHORT);
+    }
+    if (stats.sdevValid)
+    {
+        uiFormatEngineering(uiScene.sdev, sizeof(uiScene.sdev), uiScene.sdevUnit, sizeof(uiScene.sdevUnit), stats.sdev,
+                            uiCtxUnit, false, "", UI_PLACEHOLDER);
+        uiFormatEngineering(uiScene.sem, sizeof(uiScene.sem), uiScene.semUnit, sizeof(uiScene.semUnit),
+                            stats.sdev / sqrt((double)stats.count), uiCtxUnit, false, "", UI_PLACEHOLDER_SHORT);
+        uiFormatDigits(uiScene.sdevDigits, sizeof(uiScene.sdevDigits), stats.sdev, uiCtxUnit, uiCtxDecimals);
+        if (relative)
+        {
+            uiFormatRatio(uiScene.rel, sizeof(uiScene.rel), uiScene.relUnit, sizeof(uiScene.relUnit),
+                          stats.sdev / fabs(stats.average), UI_PLACEHOLDER);
+        }
+    }
+    if (stats.slopeValid)
+    {
+        bool perMinute = (uiCtxInterval <= CONFIG_UI_TREND_PER_MINUTE_MAX_INTERVAL);
+        uiFormatEngineering(uiScene.trend, sizeof(uiScene.trend), uiScene.trendUnit, sizeof(uiScene.trendUnit),
+                            stats.slopePerSecond * (perMinute ? 60.0 : 3600.0), uiCtxUnit, true, perMinute ? "/m" : "/h",
+                            UI_PLACEHOLDER_SHORT);
     }
 }
 
@@ -316,16 +381,17 @@ static bool uiUpdateStatsScreen(bool force)
                 datalogStatsAbort(&uiJob);
                 uiJobRunning = false;
             }
-            if (contextChanged)
-            {
-                uiSetPlaceholders(); // the old numbers are in another unit/function/interval
-                changed = true;
-            }
             snprintf(uiCtxFilter, sizeof(uiCtxFilter), "%s", filter);
             uiCtxUnit = unit;
             uiCtxDecimals = decimals;
             uiCtxInterval = uiInterval;
             uiHaveContext = true;
+            if (contextChanged)
+            {
+                uiSetPlaceholders(); // the old numbers are in another unit/function/interval (v25: after the new
+                                     // context is set - the placeholders of pages 2 and 3 carry its units)
+                changed = true;
+            }
 
             if (filter[0] != '\0')
             {
@@ -384,6 +450,11 @@ static void uiSetScreen(uint8_t screen)
     {
         datalogStatsAbort(&uiJob); // leaving the statistics: free the job's memory
         uiJobRunning = false;
+    }
+    if (screen == UI_SCREEN_QUICKSTATS && uiScreen != UI_SCREEN_HELP && uiScreen != UI_SCREEN_QUICKSTATS)
+    {
+        uiStatsPage = FB_STATS_PAGE_MAIN; // v25: opened anew - page 1 (back from its help: the page stays)
+        uiScene.page = uiStatsPage;
     }
     uiScreen = screen;
     uiSetupLastActivityMs = (uint32_t)millis(); // v15: a settings screen starts its timeout now
@@ -606,25 +677,39 @@ uint8_t uiGetGraphSetupRow()
 
 // Its words in every language of help_text.h (HELP_LANG_*). Theme names come
 // from themes[] (config.h), language names from helpLanguageNames[].
-#define UI_WORD_TITLE  0
-#define UI_WORD_ROW0   1 // UI_WORD_ROW0 + UI_DMM_SETUP_ROW_*
-#define UI_WORD_KEYS   4
-#define UI_WORD_ON     5
-#define UI_WORD_OFF    6
-#define UI_WORD_LANG   7 // the language's own name, shown after its code
-#define UI_WORD_COUNT  8
+#define UI_WORD_TITLE       0
+#define UI_WORD_ROW0        1  // UI_WORD_ROW0 + UI_DMM_SETUP_ROW_*
+#define UI_WORD_KEYS        7
+#define UI_WORD_ON          8
+#define UI_WORD_OFF         9
+#define UI_WORD_LANG        10 // the language's own name, shown after its code
+#define UI_WORD_SOUND0      11 // v23: + SETTINGS_BEEP_* (OFF, ALL, ALARMS)
+#define UI_WORD_CSV0        14 // v23: + SETTINGS_CSV_* (COMMA, SEMICOLON)
+#define UI_WORD_SD_NOCARD   16 // v23: SD state shown after ON
+#define UI_WORD_SD_FULL     17
+#define UI_WORD_SD_ERROR    18
+#define UI_WORD_HOLD0       19 // v24: + SETTINGS_HOLD_* (MANUAL, AUTO)
+#define UI_WORD_COUNT       21
 static const char *const uiDmmSetupWords[HELP_LANG_COUNT][UI_WORD_COUNT] = {
-    {"DMM - NASTAVENI", "JAZYK", "TEMA", "ZVUK", "REL/dB: zmena  RCL: dalsi  STO: zpet", "ZAP", "VYP", "CESTINA"},
-    {"DMM SETTINGS", "LANGUAGE", "THEME", "SOUND", "REL/dB: change  RCL: next  STO: back", "ON", "OFF", "ENGLISH"},
+    {"DMM - NASTAVENI", "JAZYK", "TEMA", "ZVUK", "SD KARTA", "FORMAT CSV", "HOLD",
+     "REL/dB: zmena  RCL: dalsi  STO: zpet", "ZAP", "VYP", "CESTINA", "VYP", "VSE", "JEN ALARMY", "1.234 , (EN)",
+     "1,234 ; (CZ)", "CHYBI KARTA", "PLNA KARTA", "CHYBA", "RUCNI", "AUTO HOLD"},
+    {"DMM SETTINGS", "LANGUAGE", "THEME", "SOUND", "SD CARD", "CSV FORMAT", "HOLD",
+     "REL/dB: change  RCL: next  STO: back", "ON", "OFF", "ENGLISH", "OFF", "ALL", "ALARMS ONLY", "1.234 , (EN)",
+     "1,234 ; (CZ)", "NO CARD", "CARD FULL", "ERROR", "MANUAL", "AUTO HOLD"},
 };
+
+// v23: the order REL/dB step the sound through: ALL -> ALARMS ONLY -> OFF (and back).
+static const uint8_t uiSoundOrder[SETTINGS_BEEP_MODES] = {SETTINGS_BEEP_ALL, SETTINGS_BEEP_ALARMS, SETTINGS_BEEP_OFF};
 
 static const char *uiDmmWord(uint8_t word)
 {
     return uiDmmSetupWords[uiLanguage()][word];
 }
 
-// One step of the value on the cursor line: the language and the theme go
-// round, the sound toggles. Applied at once, saved deferred.
+// One step of the value on the cursor line: the language, the theme, the
+// sound and the CSV format go round, SD logging toggles. Applied at once,
+// saved deferred.
 static void uiDmmSetupStep(int8_t delta)
 {
     switch (uiDmmSetupRow)
@@ -645,9 +730,114 @@ static void uiDmmSetupStep(int8_t delta)
             break;
         }
         case UI_DMM_SETUP_ROW_SOUND:
-            settingsSetBeepEnabledDeferred(!settingsGetBeepEnabled());
+        {
+            uint8_t mode = settingsGetBeepMode();
+            uint8_t pos = 0;
+            for (uint8_t i = 0; i < SETTINGS_BEEP_MODES; i++)
+            {
+                if (uiSoundOrder[i] == mode)
+                {
+                    pos = i;
+                }
+            }
+            pos = (uint8_t)(((int)pos + delta + SETTINGS_BEEP_MODES) % SETTINGS_BEEP_MODES);
+            settingsSetBeepModeDeferred(uiSoundOrder[pos]);
+            break;
+        }
+        case UI_DMM_SETUP_ROW_SD:
+            settingsSetSdEnabledDeferred(!settingsGetSdEnabled()); // the SD task follows within CONFIG_SD_POLL_MS
+            break;
+        case UI_DMM_SETUP_ROW_CSV:
+            settingsSetSdCsvFormatDeferred(
+                (uint8_t)(((int)settingsGetSdCsvFormat() + delta + SETTINGS_CSV_FORMATS) % SETTINGS_CSV_FORMATS));
+            break;
+        case UI_DMM_SETUP_ROW_HOLD:
+            // v24: the next STO hold uses it (a HOLD already on keeps its kind)
+            settingsSetHoldModeDeferred(
+                (uint8_t)(((int)settingsGetHoldMode() + delta + SETTINGS_HOLD_MODES) % SETTINGS_HOLD_MODES));
             break;
         default:
+            break;
+    }
+}
+
+// v23: keeps the cursor line inside the shown window of FB_SETUP_ROWS lines.
+static void uiDmmSetupScroll()
+{
+    if (uiDmmSetupRow < uiDmmSetupTop)
+    {
+        uiDmmSetupTop = uiDmmSetupRow;
+    }
+    else if (uiDmmSetupRow >= uiDmmSetupTop + FB_SETUP_ROWS)
+    {
+        uiDmmSetupTop = (uint8_t)(uiDmmSetupRow - FB_SETUP_ROWS + 1);
+    }
+    if (uiDmmSetupTop + FB_SETUP_ROWS > UI_DMM_SETUP_ROWS)
+    {
+        uiDmmSetupTop = (UI_DMM_SETUP_ROWS > FB_SETUP_ROWS) ? (uint8_t)(UI_DMM_SETUP_ROWS - FB_SETUP_ROWS) : 0;
+    }
+}
+
+// The value text of one line of the DMM settings.
+static void uiDmmSetupValue(uint8_t row, char *out, size_t size)
+{
+    switch (row)
+    {
+        case UI_DMM_SETUP_ROW_LANGUAGE:
+            snprintf(out, size, "%s - %s", helpLanguageNames[uiLanguage()], uiDmmWord(UI_WORD_LANG));
+            break;
+        case UI_DMM_SETUP_ROW_THEME:
+        {
+            uint8_t theme = settingsGetTheme();
+            if (theme >= themeCount)
+            {
+                theme = 0;
+            }
+            snprintf(out, size, "%s (%u/%u)", themes[theme].name, (unsigned)(theme + 1), (unsigned)themeCount);
+            break;
+        }
+        case UI_DMM_SETUP_ROW_SOUND:
+            snprintf(out, size, "%s", uiDmmWord((uint8_t)(UI_WORD_SOUND0 + settingsGetBeepMode())));
+            break;
+        case UI_DMM_SETUP_ROW_SD:
+        {
+            if (!settingsGetSdEnabled())
+            {
+                snprintf(out, size, "%s", uiDmmWord(UI_WORD_OFF));
+                break;
+            }
+            uint8_t state = sdlogState();
+            int8_t word = -1;
+            if (state == SDLOG_STATE_NO_CARD)
+            {
+                word = UI_WORD_SD_NOCARD;
+            }
+            else if (state == SDLOG_STATE_FULL)
+            {
+                word = UI_WORD_SD_FULL;
+            }
+            else if (state == SDLOG_STATE_ERROR)
+            {
+                word = UI_WORD_SD_ERROR;
+            }
+            if (word < 0)
+            {
+                snprintf(out, size, "%s", uiDmmWord(UI_WORD_ON));
+            }
+            else
+            {
+                snprintf(out, size, "%s - %s", uiDmmWord(UI_WORD_ON), uiDmmWord((uint8_t)word));
+            }
+            break;
+        }
+        case UI_DMM_SETUP_ROW_CSV:
+            snprintf(out, size, "%s", uiDmmWord((uint8_t)(UI_WORD_CSV0 + settingsGetSdCsvFormat())));
+            break;
+        case UI_DMM_SETUP_ROW_HOLD:
+            snprintf(out, size, "%s", uiDmmWord((uint8_t)(UI_WORD_HOLD0 + settingsGetHoldMode())));
+            break;
+        default:
+            out[0] = '\0';
             break;
     }
 }
@@ -655,25 +845,27 @@ static void uiDmmSetupStep(int8_t delta)
 void uiFillDmmSetupScene(FbSetupScene *scene)
 {
     memset(scene, 0, sizeof(*scene));
+    uiDmmSetupScroll();
     snprintf(scene->title, sizeof(scene->title), "%s", uiDmmWord(UI_WORD_TITLE));
-    for (uint8_t row = 0; row < UI_DMM_SETUP_ROWS; row++)
+    uint8_t shown = 0;
+    for (uint8_t i = 0; i < FB_SETUP_ROWS && uiDmmSetupTop + i < UI_DMM_SETUP_ROWS; i++)
     {
-        snprintf(scene->labels[row], sizeof(scene->labels[row]), "%s", uiDmmWord((uint8_t)(UI_WORD_ROW0 + row)));
+        uint8_t row = (uint8_t)(uiDmmSetupTop + i);
+        snprintf(scene->labels[i], sizeof(scene->labels[i]), "%s", uiDmmWord((uint8_t)(UI_WORD_ROW0 + row)));
+        uiDmmSetupValue(row, scene->values[i], sizeof(scene->values[i]));
+        shown++;
     }
-    snprintf(scene->values[UI_DMM_SETUP_ROW_LANGUAGE], sizeof(scene->values[0]), "%s - %s",
-             helpLanguageNames[uiLanguage()], uiDmmWord(UI_WORD_LANG));
-    uint8_t theme = settingsGetTheme();
-    if (theme >= themeCount)
-    {
-        theme = 0;
-    }
-    snprintf(scene->values[UI_DMM_SETUP_ROW_THEME], sizeof(scene->values[0]), "%s (%u/%u)", themes[theme].name,
-             (unsigned)(theme + 1), (unsigned)themeCount);
-    snprintf(scene->values[UI_DMM_SETUP_ROW_SOUND], sizeof(scene->values[0]), "%s",
-             uiDmmWord(settingsGetBeepEnabled() ? UI_WORD_ON : UI_WORD_OFF));
     snprintf(scene->keys, sizeof(scene->keys), "%s", uiDmmWord(UI_WORD_KEYS));
-    scene->cursorRow = uiDmmSetupRow;
-    scene->rowCount = UI_DMM_SETUP_ROWS;
+    scene->cursorRow = (uint8_t)(uiDmmSetupRow - uiDmmSetupTop);
+    scene->rowCount = shown;
+    scene->moreAbove = uiDmmSetupTop > 0;
+    scene->moreBelow = uiDmmSetupTop + shown < UI_DMM_SETUP_ROWS;
+}
+
+// v23: first line shown (host tests).
+uint8_t uiGetDmmSetupTop()
+{
+    return uiDmmSetupTop;
 }
 
 uint8_t uiGetDmmSetupRow()
@@ -920,6 +1112,64 @@ bool uiPoll()
         }
     }
 
+    // v24: STO on the LCD: a click (at the release) opens the statistics - or, while HOLD is on, only ends it;
+    // held CONFIG_UI_HOLD_HOLD_MS (while still held) starts HOLD of the kind on the DMM settings screen.
+    // Manual HOLD: AT THE PRESS the LCD freezes on the reading shown at its first edge and HOLD lights (a
+    // preview, undone if it turns out to be a click); after the hold time HOLD is confirmed: beep, the record
+    // marked, TAG lit.
+    if (stoPressed && uiScreen == UI_SCREEN_LCD)
+    {
+        uiLcdStoArmed = true;
+        stoPressed = false;
+        if (holdState() == HOLD_STATE_OFF && settingsGetHoldMode() == SETTINGS_HOLD_MANUAL)
+        {
+            holdPreview(buttonsPressStartMs(BUTTON_STO)); // frozen + HOLD at once, on what was shown at the first edge
+            uiLcdStoFrozen = true;
+        }
+    }
+    if (uiLcdStoArmed)
+    {
+        if (uiScreen != UI_SCREEN_LCD)
+        {
+            uiLcdStoArmed = false; // the screen changed under it (DMM off / sleep): forget the press
+            if (uiLcdStoFrozen)
+            {
+                uiLcdStoFrozen = false;
+                holdCancelPreview();
+            }
+        }
+        else if (!buttonsIsHeld(BUTTON_STO))
+        {
+            uiLcdStoArmed = false;
+            if (uiLcdStoFrozen)
+            {
+                uiLcdStoFrozen = false;
+                holdCancelPreview(); // only a click: live again, HOLD dark
+            }
+            if (holdState() != HOLD_STATE_OFF)
+            {
+                holdStop();
+                debugLogf("UI: HOLD ended");
+            }
+            else
+            {
+                uiSetScreen(UI_SCREEN_QUICKSTATS);
+                forceRefresh = true;
+                relPressed = dbPressed = rclPressed = false; // a press in the same instant belongs to the old screen
+            }
+            changed = true;
+        }
+        else if ((uint32_t)(millis() - buttonsPressStartMs(BUTTON_STO)) >= (uint32_t)CONFIG_UI_HOLD_HOLD_MS)
+        {
+            uiLcdStoArmed = false;
+            uiLcdStoFrozen = false; // HOLD takes the preview over (the same frame)
+            holdStart(settingsGetHoldMode(), buttonsPressStartMs(BUTTON_STO), true); // manual: marked, TAG lit now
+            beeperBeepAsync(CONFIG_BEEP_CLICK_MS * 4); // the hold was recognised
+            changed = true;
+            debugLogf("UI: HOLD started (%s)", settingsGetHoldMode() == SETTINGS_HOLD_AUTO ? "AUTO" : "manual");
+        }
+    }
+
     if (stoPressed)
     {
         // STO: on the help screen back to where it was opened from; on the
@@ -985,10 +1235,20 @@ bool uiPoll()
         // Full pages: REL click = previous page, dB click = next page (both at
         // the release); REL held = start, dB held = end (as soon as the hold
         // time is reached). The last page always ends with the last line of the
-        // text. RCL does nothing here. STO is handled above.
+        // text. v25: RCL (at the press) = next page, after the last one back to
+        // the first - like RCL = next line on the settings screens. STO is
+        // handled above.
         uint32_t nowMs = (uint32_t)millis();
         uint16_t lastTop = uiHelpLastTop();
         uint16_t top = uiHelpTop;
+        if (rclPressed)
+        {
+            top = (top >= lastTop) ? 0 : (uint16_t)(top + FB_HELP_LINES);
+            if (top > lastTop)
+            {
+                top = lastTop;
+            }
+        }
         if (relPressed)
         {
             uiHelpRelArmed = true;
@@ -1173,10 +1433,18 @@ bool uiPoll()
     }
     else if (uiScreen == UI_SCREEN_DMM_SETUP)
     {
+        // v23: the SD line shows the card state - redraw when it changes (sdlog.ino wakes the UI then)
+        uint8_t sdView = settingsGetSdEnabled() ? sdlogState() : 0xFF;
+        if (sdView != uiDmmSdViewShown)
+        {
+            uiDmmSdViewShown = sdView;
+            changed = true;
+        }
         // RCL = next line, REL/dB = change the value (at the press), STO (above) = back to the LCD
         if (rclPressed)
         {
             uiDmmSetupRow = (uint8_t)((uiDmmSetupRow + 1) % UI_DMM_SETUP_ROWS);
+            uiDmmSetupScroll(); // v23: the list scrolls with the cursor
             changed = true;
         }
         if (relPressed)
@@ -1298,7 +1566,12 @@ bool uiPoll()
         {
             if (!buttonsIsHeld(BUTTON_RCL))
             {
-                uiLogClearArmed = false; // released too early
+                // released before the log was cleared: a click - v25: the next page of the statistics
+                uiLogClearArmed = false;
+                uiStatsPage = (uint8_t)((uiStatsPage + 1) % FB_STATS_PAGE_COUNT);
+                uiScene.page = uiStatsPage;
+                changed = true;
+                debugLogf("UI: statistics page %u", (unsigned)(uiStatsPage + 1));
             }
             else if ((uint32_t)(millis() - buttonsPressStartMs(BUTTON_RCL)) >= (uint32_t)CONFIG_UI_LOG_CLEAR_HOLD_MS)
             {

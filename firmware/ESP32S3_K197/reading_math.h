@@ -55,6 +55,11 @@ const char *keithleyFunctionPrefix(uint8_t unit, uint16_t indicatorBits);
 // mix functions) - those always get a normal '+'/'-'.
 void keithleyPrintScientific(Stream &interface, double value, bool acMagnitude);
 
+// v23: the same text into a buffer (the SD card log, sdlog.ino) - at most
+// 14 characters + NUL ("-9.99999E+37"); returns the length written (the text
+// is cut at bufSize - 1).
+size_t keithleyFormatScientific(char *buf, size_t bufSize, double value, bool acMagnitude);
+
 // Overflow/overload sentinel magnitude used wherever a reading can't
 // produce a real segment-derived value (OL) but still needs to fit
 // into the numeric scientific-notation formats - the conventional

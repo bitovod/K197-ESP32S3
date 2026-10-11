@@ -28,6 +28,8 @@ not answer in light sleep.
 | `MEASure:AUTO …` | the same as `SYSTem:AUTO` |
 | `MEASure:TRIGger <INT\|EXT\|MARK>` / `?` | INT = sending per AUTO. EXT = AUTO paused; each falling edge on the rear EXTERNAL TRIGGER input sends the next complete reading once. MARK = the input is a marker key (foot switch): every press sets a marker; debounced, presses closer than 300 ms are ignored; AUTO as with INT. After power-up always INT |
 
+| `MEASure:HOLD <ON\|AUTO\|OFF>` / `?` | DATA HOLD of the display only (`READ?`, the log, statistics, graph, alarm and SD card stay live). ON = the reading shown now, with a marker; AUTO = AUTO HOLD (waits for a stable reading, captures every new one with a beep and a marker); OFF = live. Query: `OFF`, `ON`, `AUTO WAIT`, `AUTO HELD`. Not kept (the front-panel kind MANUAL / AUTO is) |
+
 The rear METERING COMPLETE output gives a pulse after every reading, in every mode.
 
 ## Reading log
@@ -51,8 +53,18 @@ Examples: `LOG:DATA? DCV`, `LOG:DATA? OHM 10 50`, `LOG:DATA? -50`.
 | `LOG:MARKer` | sets a marker on the newest record |
 | `LOG:MARKer? […]` | the same CSV, only the marked records |
 | `LOG:MIN? / LOG:MAX? / LOG:AVERage? / LOG:MEDian? […]` | one number over the range, OL and SETTLE records excluded. The median of more than 100 000 records is computed from an evenly spread sample |
+| `LOG:SDEViation? […]` | sample standard deviation (n − 1) in base units; no reply below 2 records |
+| `LOG:TREND? […]` | trend: least-squares slope over the RTC time, base units **per hour**; records without an RTC time are left out; no reply below 3 such records |
 
 A full log is ~30 MB of CSV and takes about 45 minutes at 115200 Bd.
+
+## SD card
+
+| Command | Description |
+|---|---|
+| `MMEMory:LOG <ON\|OFF>` / `?` | copies the reading log to CSV files on the SD card (see the user guide). OFF writes everything, closes the file and unmounts the card (it may be taken out). Kept; default OFF |
+| `MMEMory:FORMat <COMMa\|SEMicolon>` / `?` | COMMa = `,` between the fields and a decimal point (like `LOG:DATA?`); SEMicolon = `;` and a decimal comma (Czech Excel). Applies to new lines |
+| `MMEMory:STATe?` | `<state>,<file>,<records in the file>,<free MB>,<backlog>`; state `OFF`, `NOCARD`, `READY`, `LOGGING`, `FULL`, `ERROR`; backlog = records of the log not on the card yet |
 
 ## Limit alarm
 
@@ -83,15 +95,15 @@ Without `<function>` the commands work on the function being measured.
 | `SYSTem:TIME:AGINg <-128..127>` / `?` | aging offset of the DS3231 (rate trim): one step ≈ 0.1 ppm ≈ 8.6 ms a day, positive = slower. Applied at once, kept in the settings, written back at boot if the RTC holds another value |
 | `SYSTem:THEMe <0..7>` / `?` | colour theme (RED, GRN, ORG1, ORG2, VFD, LCD1, LCD2, LCD3) |
 | `SYSTem:LANGuage <CZ\|EN>` / `?` | language of the help and the settings screens |
-| `SYSTem:BEEP <ON\|OFF>` / `?` | all sounds on/off |
+| `SYSTem:BEEP <ON\|ALARm\|OFF>` / `?` | ON = all sounds; ALARm = only the limit alarm and the SD card alarm; OFF = none at all |
 | `SYSTem:YOFFset <0..n>` / `?` | vertical position of the picture on the panel (default 24) |
 | `SYSTem:COMM <UART\|USB>` / `?` | which port SCPI uses (switches at once) |
 | `SYSTem:DEBUG <ON\|OFF>` / `?` | trace of every DMM frame (raw bytes + decoded reading) |
 | `SYSTem:DEBUG:PORT <UART\|USB>` / `?` | where debug messages go (on UART each line starts with `# `) |
-| `SYSTem:DIAGnostic?` | memory, stacks of all tasks, render/blit times, graph and statistics times, log fill, light sleeps while the K197 is off (count, time asleep, last wake-up) |
+| `SYSTem:DIAGnostic?` | memory, stacks of all tasks, render/blit times, graph and statistics times, log fill, SD card (state, write times), light sleeps while the K197 is off (count, time asleep, last wake-up) |
 | `SYSTem:DIAGnostic:CLEar` | zeroes the maxima |
 
-All settings except `MEASure:TRIGger` are kept in EEPROM. Changes from SCPI are saved at once, changes from the
+All settings except `MEASure:TRIGger` and `MEASure:HOLD` are kept in EEPROM. Changes from SCPI are saved at once, changes from the
 front panel about 10 s after the last change.
 
 ---
@@ -123,6 +135,8 @@ neodpovídá.
 | `MEASure:AUTO …` | totéž jako `SYSTem:AUTO` |
 | `MEASure:TRIGger <INT\|EXT\|MARK>` / `?` | INT = posílání podle AUTO. EXT = AUTO pozastaveno; každá sestupná hrana na zadním vstupu EXTERNAL TRIGGER jednou odešle nejbližší kompletní měření. MARK = vstup je tlačítko markeru (nožní spínač): každý stisk zapíše marker; ošetřené odskakování, stisky blíž než 300 ms se ignorují; AUTO jako u INT. Po zapnutí vždy INT |
 
+| `MEASure:HOLD <ON\|AUTO\|OFF>` / `?` | DATA HOLD jen displeje (`READ?`, log, statistika, graf, alarm i SD karta běží dál). ON = zmrazí zobrazenou hodnotu a označí ji markerem; AUTO = AUTO HOLD (čeká na ustálenou hodnotu, každou novou zachytí s pípnutím a markerem); OFF = živý displej. Dotaz: `OFF`, `ON`, `AUTO WAIT`, `AUTO HELD`. Neukládá se (druh RUCNI / AUTO z panelu ano) |
+
 Zadní výstup METERING COMPLETE dává puls po každém měření, ve všech režimech.
 
 ## Log měření
@@ -146,8 +160,18 @@ Příklady: `LOG:DATA? DCV`, `LOG:DATA? OHM 10 50`, `LOG:DATA? -50`.
 | `LOG:MARKer` | zapíše marker k nejnovějšímu záznamu |
 | `LOG:MARKer? […]` | stejné CSV, jen označené záznamy |
 | `LOG:MIN? / LOG:MAX? / LOG:AVERage? / LOG:MEDian? […]` | jedno číslo za rozsah, bez záznamů OL a SETTLE. Medián z více než 100 000 záznamů se počítá z rovnoměrně rozloženého vzorku |
+| `LOG:SDEViation? […]` | výběrová směrodatná odchylka (n − 1) v základních jednotkách; pod 2 záznamy bez odpovědi |
+| `LOG:TREND? […]` | trend: sklon přímky metodou nejmenších čtverců podle času z RTC, v základních jednotkách **za hodinu**; záznamy bez času z RTC se vynechají; pod 3 takovými záznamy bez odpovědi |
 
 Plný log je asi 30 MB CSV a při 115200 Bd se přenáší asi 45 minut.
+
+## SD karta
+
+| Příkaz | Popis |
+|---|---|
+| `MMEMory:LOG <ON\|OFF>` / `?` | kopíruje log do souborů CSV na SD kartě (viz návod k obsluze). OFF vše zapíše, zavře soubor a odpojí kartu (lze ji vyjmout). Ukládá se; výchozí OFF |
+| `MMEMory:FORMat <COMMa\|SEMicolon>` / `?` | COMMa = `,` mezi poli a desetinná tečka (jako `LOG:DATA?`); SEMicolon = `;` a desetinná čárka (český Excel). Platí pro nové řádky |
+| `MMEMory:STATe?` | `<stav>,<soubor>,<záznamů v souboru>,<volné MB>,<nezapsáno>`; stav `OFF`, `NOCARD`, `READY`, `LOGGING`, `FULL`, `ERROR`; nezapsáno = záznamy logu, které ještě nejsou na kartě |
 
 ## Alarm mezí
 
@@ -178,13 +202,13 @@ Bez `<funkce>` platí příkazy pro právě měřenou funkci.
 | `SYSTem:TIME:AGINg <-128..127>` / `?` | registr stárnutí (aging) DS3231, dolaďuje chod: jeden krok ≈ 0,1 ppm ≈ 8,6 ms za den, kladná hodnota = pomaleji. Platí hned, uloží se do nastavení a při startu se zapíše zpět, pokud RTC drží jinou hodnotu |
 | `SYSTem:THEMe <0..7>` / `?` | barevné téma (RED, GRN, ORG1, ORG2, VFD, LCD1, LCD2, LCD3) |
 | `SYSTem:LANGuage <CZ\|EN>` / `?` | jazyk nápovědy a nastavovacích obrazovek |
-| `SYSTem:BEEP <ON\|OFF>` / `?` | všechny zvuky zap/vyp |
+| `SYSTem:BEEP <ON\|ALARm\|OFF>` / `?` | ON = všechny zvuky; ALARm = jen alarm mezí a alarm SD karty; OFF = žádné |
 | `SYSTem:YOFFset <0..n>` / `?` | svislá poloha obrazu na panelu (výchozí 24) |
 | `SYSTem:COMM <UART\|USB>` / `?` | port, na kterém běží SCPI (přepne hned) |
 | `SYSTem:DEBUG <ON\|OFF>` / `?` | výpis každého rámce z DMM (surové bajty + dekódovaná hodnota) |
 | `SYSTem:DEBUG:PORT <UART\|USB>` / `?` | kam jdou ladicí zprávy (na UARTu začíná každý řádek `# `) |
-| `SYSTem:DIAGnostic?` | paměť, zásobníky všech tasků, časy vykreslování, grafu a statistiky, zaplnění logu, uspání při vypnutém K197 (počet, doba spánku, poslední probuzení) |
+| `SYSTem:DIAGnostic?` | paměť, zásobníky všech tasků, časy vykreslování, grafu a statistiky, zaplnění logu, SD karta (stav, časy zápisu), uspání při vypnutém K197 (počet, doba spánku, poslední probuzení) |
 | `SYSTem:DIAGnostic:CLEar` | vynuluje maxima |
 
-Všechna nastavení kromě `MEASure:TRIGger` se ukládají do EEPROM. Změny přes SCPI se ukládají hned, změny z panelu
+Všechna nastavení kromě `MEASure:TRIGger` a `MEASure:HOLD` se ukládají do EEPROM. Změny přes SCPI se ukládají hned, změny z panelu
 asi 10 s po poslední změně.

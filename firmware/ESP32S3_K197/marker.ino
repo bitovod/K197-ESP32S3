@@ -62,19 +62,40 @@ bool markerAdd(uint32_t atMs, uint8_t source)
     markerStep = MARKER_STEP_SECOND_BEEP;
     portEXIT_CRITICAL(&markerMux);
 
-    setTagIndicator(true);
-    beeperBeepAsync(CONFIG_MARKER_BEEP_MS);
-    if (markerTimer != NULL)
+    if (source == MARKER_SOURCE_HOLD)
     {
-        esp_timer_stop(markerTimer); // a running sequence starts over (stop fails harmlessly if idle)
-        esp_timer_start_once(markerTimer, (uint64_t)(CONFIG_MARKER_BEEP_MS + CONFIG_MARKER_BEEP_GAP_MS) * 1000ULL);
+        // v24: silent - DATA HOLD shows TAG itself at the right moment (markerShowTag())
     }
-    static const char *const names[] = {"keys", "EXT TRIG", "SCPI"};
-    debugLogf("MARK: record serial %lu (%s)", (unsigned long)serial, (source <= MARKER_SOURCE_SCPI) ? names[source] : "?");
+    else
+    {
+        setTagIndicator(true);
+        beeperBeepAsync(CONFIG_MARKER_BEEP_MS);
+        if (markerTimer != NULL)
+        {
+            esp_timer_stop(markerTimer); // a running sequence starts over (stop fails harmlessly if idle)
+            esp_timer_start_once(markerTimer, (uint64_t)(CONFIG_MARKER_BEEP_MS + CONFIG_MARKER_BEEP_GAP_MS) * 1000ULL);
+        }
+    }
+    static const char *const names[] = {"keys", "EXT TRIG", "SCPI", "HOLD"};
+    debugLogf("MARK: record serial %lu (%s)", (unsigned long)serial, (source <= MARKER_SOURCE_HOLD) ? names[source] : "?");
     return true;
 }
 
 uint32_t markerCount()
 {
     return markerTotal;
+}
+
+void markerShowTag()
+{
+    portENTER_CRITICAL(&markerMux);
+    markerSince = (uint32_t)millis();
+    markerStep = MARKER_STEP_TAG_OFF;
+    portEXIT_CRITICAL(&markerMux);
+    setTagIndicator(true);
+    if (markerTimer != NULL)
+    {
+        esp_timer_stop(markerTimer); // a running sequence (a double beep pending) is replaced
+        esp_timer_start_once(markerTimer, (uint64_t)CONFIG_MARKER_SHOW_MS * 1000ULL);
+    }
 }

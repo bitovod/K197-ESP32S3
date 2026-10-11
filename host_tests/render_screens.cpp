@@ -40,9 +40,11 @@ static void save(const char *name, int theme, bool uiScreen)
 }
 
 static void lcd(const char *name, int theme, const char *digits, int dp, uint16_t ind, uint8_t unit, uint8_t alarm,
-                bool tag)
+                bool tag, uint8_t hold = 0, bool sd = false)
 {
     FbLcdScene s;
+    s.hold = hold; // v24: HOLD / AUTO
+    s.sdLit = sd;  // v23: SD!
     for (int i = 0; i < KEITHLEY_DIGIT_COUNT; i++)
     {
         s.segBits[i] = keithley_char_segbits[(digits[i] == ' ') ? 10 : digits[i] - '0'];
@@ -57,7 +59,7 @@ static void lcd(const char *name, int theme, const char *digits, int dp, uint16_
 }
 
 static void setup(const char *name, const char *title, const char *const *labels, const char *const *values,
-                  int rows, int cursor, const char *keys)
+                  int rows, int cursor, const char *keys, bool moreAbove = false, bool moreBelow = false)
 {
     FbSetupScene s;
     memset(&s, 0, sizeof(s));
@@ -70,6 +72,8 @@ static void setup(const char *name, const char *title, const char *const *labels
     snprintf(s.keys, sizeof(s.keys), "%s", keys);
     s.rowCount = (uint8_t)rows;
     s.cursorRow = (uint8_t)cursor;
+    s.moreAbove = moreAbove;
+    s.moreBelow = moreBelow;
     fbComposeSetup(gFb, s);
     save(name, 1, true);
 }
@@ -92,6 +96,10 @@ int main(int argc, char **argv)
     lcd("lcd_alarm_high", 1, "130000", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_HIGH, false);
     lcd("lcd_alarm_low", 1, "150000", 0, aut | FB_BIT_MINUS, KEITHLEY_UNIT_V, FB_ALARM_LOW, false);
     lcd("lcd_tag", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, true);
+    // v24 DATA HOLD (manual: HOLD; AUTO HOLD captured: HOLD + AUTO), v23 SD card problem (SD! lit)
+    lcd("lcd_hold", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, true, FB_HOLD_LIT);
+    lcd("lcd_auto_hold", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, false, FB_HOLD_LIT | FB_HOLD_AUTO_LIT);
+    lcd("lcd_sd", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, false, 0, true);
     // v22: the K197 switched off (segment bits as dmm_bridge.ino draws them: o F F 1 9 7)
     {
         FbLcdScene off;
@@ -136,6 +144,27 @@ int main(int argc, char **argv)
             snprintf(name, sizeof(name), "theme_%d_ui", t);
             save(name, t, true);
         }
+        // v25: pages 2 and 3 (RCL)
+        snprintf(s.interval, sizeof(s.interval), "1 HOUR");
+        snprintf(s.sdev, sizeof(s.sdev), "8.23");
+        snprintf(s.sdevUnit, sizeof(s.sdevUnit), "%cV", FONT_CH_MICRO);
+        snprintf(s.rel, sizeof(s.rel), "6.67");
+        snprintf(s.relUnit, sizeof(s.relUnit), "ppm");
+        snprintf(s.dif, sizeof(s.dif), "0.00069");
+        snprintf(s.pts, sizeof(s.pts), "11946");
+        snprintf(s.sem, sizeof(s.sem), "75.3");
+        snprintf(s.semUnit, sizeof(s.semUnit), "nV");
+        snprintf(s.trend, sizeof(s.trend), "+12.3");
+        snprintf(s.trendUnit, sizeof(s.trendUnit), "%cV/h", FONT_CH_MICRO);
+        snprintf(s.sdevDigits, sizeof(s.sdevDigits), "0.82");
+        snprintf(s.difRel, sizeof(s.difRel), "559");
+        snprintf(s.difRelUnit, sizeof(s.difRelUnit), "ppm");
+        s.page = FB_STATS_PAGE_SPREAD;
+        fbComposeStats(gFb, s);
+        save("stats_page2", 1, true);
+        s.page = FB_STATS_PAGE_TREND;
+        fbComposeStats(gFb, s);
+        save("stats_page3", 1, true);
     }
 
     // help, first page of the DMM section in both languages
@@ -162,9 +191,10 @@ int main(int argc, char **argv)
 
     // settings screens (English)
     {
-        const char *l[3] = {"LANGUAGE", "THEME", "SOUND"};
-        const char *v[3] = {"EN - ENGLISH", "GRN (2/8)", "ON"};
-        setup("setup_dmm", "DMM SETTINGS", l, v, 3, 1, "REL/dB: change  RCL: next  STO: back");
+        // v23/v24: six lines, a window of four that scrolls (mark at the right end of the last line)
+        const char *l[4] = {"LANGUAGE", "THEME", "SOUND", "SD CARD"};
+        const char *v[4] = {"ENGLISH", "GRN (2/8)", "ALL", "ON"};
+        setup("setup_dmm", "DMM SETTINGS", l, v, 4, 1, "REL/dB: change  RCL: next  STO: back", false, true);
     }
     {
         const char *l[4] = {"ALARM", "LOW LIMIT", "HIGH LIMIT", "SIGNAL"};

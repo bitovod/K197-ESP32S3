@@ -118,4 +118,13 @@ bool buttonsTakeChord(uint32_t *firstEdgeMs);
 // v16 (SYSTem:DIAGnostic?): the button task handle (NULL before buttonsBegin()).
 TaskHandle_t buttonsGetTask();
 
+// v23: "swallow the next press" - while the SD card alarm sounds (sdlog.ino),
+// the first press of ANY key only silences it: armed with
+// buttonsArmSwallow(true), the next confirmed press records no event at all
+// (no press, no release, no chord, no click, no REL/dB pulse at the release,
+// buttonsIsHeld() false for it), disarms itself and counts up
+// buttonsSwallowedCount(). Any task may call both.
+void buttonsArmSwallow(bool armed);
+uint32_t buttonsSwallowedCount();
+
 #endif // BUTTONS_H

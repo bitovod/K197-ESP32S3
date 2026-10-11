@@ -40,6 +40,9 @@ void uiUpdateLiveReading(const char *, int8_t dpPos, uint16_t, uint8_t) { gLiveD
 void alarmUpdateReading(const char *, int8_t, uint16_t, uint8_t) {} // v17
 static int gHomeRequests = 0;
 void uiRequestHome() { gHomeRequests++; } // v22
+static int gHoldStops = 0;
+void holdStop() { gHoldStops++; } // v24: oFF197 ends HOLD
+void holdUpdateReading(const char *, int8_t, uint16_t, uint8_t) {} // v24
 static int gDmmOffNotes = 0;
 void datalogNoteDmmOff() { gDmmOffNotes++; } // v22
 static std::vector<std::string> gLog;
@@ -143,6 +146,7 @@ int main()
         const uint8_t off[6] = {0x66, 0x2B, 0x2B, 0x50, 0x5B, 0x51};
         CHECK(memcmp(gSeg, off, 6) == 0 && gDp == -1 && gInd == 0 && gUnit == KEITHLEY_UNIT_NONE && dmmIsOff(), "display shows oFF197, nothing else");
         CHECK(gHomeRequests > 0 && gDmmOffNotes > 0, "oFF197: the UI is sent back to the main display, the log told (long settling next)");
+        CHECK(gHoldStops > 0, "v24: oFF197 ends HOLD");
         CHECK(gLiveDp == -1, "statistics live value set to 'not a reading'");
         CHECK(dmmRestartCount == 1 && fakeSpi().inits == 2, "SPI slave restarted once");
         bool reported = false;

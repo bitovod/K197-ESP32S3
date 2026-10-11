@@ -98,7 +98,7 @@ int main()
     int before = EEPROM.commits;
     settingsBegin();
     CHECK(settingsGetTheme() == 3 && settingsGetDisplayYOffset() == 17 && settingsGetCommPort() == SETTINGS_COMM_USB, "migration keeps old fields");
-    CHECK(settingsGetAutoIntervalSeconds() == 30 && settingsGetAutoEnabled() && !settingsGetBeepEnabled(), "migration keeps old fields 2");
+    CHECK(settingsGetAutoIntervalSeconds() == 30 && settingsGetAutoEnabled() && settingsGetBeepMode() == SETTINGS_BEEP_OFF, "migration keeps old fields 2");
     CHECK(settingsGetStatsInterval() == CONFIG_UI_STATS_DEFAULT_INTERVAL_INDEX, "new field gets its default");
     CHECK(settingsGetDebugPort() == CONFIG_DEFAULT_DEBUG_PORT, "v13 field (debug port) gets its default too");
     CHECK(EEPROM.commits == before + 1, "migration written once");
@@ -224,14 +224,14 @@ int main()
     {
         int commits = EEPROM.commits;
         settingsSetThemeDeferred(5);
-        settingsSetBeepEnabledDeferred(false);
+        settingsSetBeepModeDeferred(SETTINGS_BEEP_OFF);
         settingsSetLanguageDeferred(0);
-        CHECK(EEPROM.commits == commits && settingsSavePending() && settingsGetTheme() == 5 && !settingsGetBeepEnabled(), "front panel: in RAM at once, flash later");
+        CHECK(EEPROM.commits == commits && settingsSavePending() && settingsGetTheme() == 5 && settingsGetBeepMode() == SETTINGS_BEEP_OFF, "front panel: in RAM at once, flash later");
         fakeMillisOffset() += CONFIG_SETTINGS_DEFERRED_SAVE_MS + 10;
         settingsPoll();
         CHECK(EEPROM.commits == commits + 1, "one write after the delay");
         settingsBegin();
-        CHECK(settingsGetTheme() == 5 && !settingsGetBeepEnabled() && settingsGetLanguage() == 0, "persisted");
+        CHECK(settingsGetTheme() == 5 && settingsGetBeepMode() == SETTINGS_BEEP_OFF && settingsGetLanguage() == 0, "persisted");
         settingsSetTheme(2);
         CHECK(EEPROM.commits == commits + 2, "SCPI setter saves at once");
     }
@@ -331,6 +331,92 @@ int main()
         settingsSetRtcAging(127);
         settingsBegin();
         CHECK(settingsGetRtcAging(NULL) == 127, "aging +127");
+    }
+
+    // ---- v23: 0xB1 -> 0xB2: everything kept (the RTC aging too), beep 0/1 = OFF/ALL, SD fields defaulted ----
+    EEPROM.reset();
+    {
+        KeithleySettings v22;
+        memset(&v22, 0xFF, sizeof(v22));
+        memset(&v22, 0, offsetof(KeithleySettings, sdEnabled));
+        v22.magic = SETTINGS_MAGIC_V22;
+        v22.theme = 4;
+        v22.beepEnabled = 1;
+        v22.graphSpan = 7;
+        v22.language = 1;
+        v22.alarmMode[1] = 1;
+        v22.alarmLow[1] = NAN;
+        v22.alarmHigh[1] = 2.5f;
+        v22.rtcAging = -12;
+        v22.rtcAgingSet = 1;
+        EEPROM.put(0, v22);
+        EEPROM.commit();
+        int commits = EEPROM.commits;
+        settingsBegin();
+        CHECK(EEPROM.commits == commits + 1, "0xB1 migration written once");
+        bool isSet = false;
+        int8_t aging = settingsGetRtcAging(&isSet);
+        uint8_t mode; float low, high;
+        settingsGetAlarm(1, &mode, &low, &high);
+        CHECK(settingsGetTheme() == 4 && settingsGetGraphSpan() == 7 && settingsGetLanguage() == 1 && mode == 1 && high == 2.5f &&
+              isSet && aging == -12, "0xB1 migration keeps everything, the RTC aging too");
+        CHECK(settingsGetBeepMode() == SETTINGS_BEEP_ALL, "old beep ON = ALL");
+        CHECK(settingsGetSdEnabled() == CONFIG_DEFAULT_SD_ENABLED && settingsGetSdCsvFormat() == CONFIG_DEFAULT_SD_CSV_FORMAT,
+              "SD fields get their defaults");
+        // the three sound values and the SD settings persist; SCPI at once, front panel deferred
+        settingsSetBeepMode(SETTINGS_BEEP_ALARMS);
+        settingsSetSdEnabled(true);
+        settingsSetSdCsvFormat(SETTINGS_CSV_COMMA);
+        settingsBegin();
+        CHECK(settingsGetBeepMode() == SETTINGS_BEEP_ALARMS && settingsGetSdEnabled() && settingsGetSdCsvFormat() == SETTINGS_CSV_COMMA,
+              "sound ALARMS, SD on, comma persist");
+        commits = EEPROM.commits;
+        settingsSetSdEnabledDeferred(false);
+        settingsSetSdCsvFormatDeferred(SETTINGS_CSV_SEMICOLON);
+        CHECK(EEPROM.commits == commits && !settingsGetSdEnabled() && settingsGetSdCsvFormat() == SETTINGS_CSV_SEMICOLON,
+              "SD front panel: in RAM at once");
+        fakeMillisOffset() += CONFIG_SETTINGS_DEFERRED_SAVE_MS + 10;
+        settingsPoll();
+        settingsBegin();
+        CHECK(EEPROM.commits == commits + 1 && !settingsGetSdEnabled(), "SD front panel: saved deferred");
+        // out-of-range values read safely
+        settingsSetBeepMode(7);
+        settingsSetSdCsvFormat(9);
+        CHECK(settingsGetBeepMode() == SETTINGS_BEEP_ALL && settingsGetSdCsvFormat() == SETTINGS_CSV_SEMICOLON, "out of range -> defaults");
+        printf("settings 0xB2: struct %u bytes\n", (unsigned)sizeof(KeithleySettings));
+    }
+
+    // ---- v24: 0xB2 -> 0xB3: everything kept (SD fields too), the HOLD mode defaulted; deferred setter ----
+    EEPROM.reset();
+    {
+        KeithleySettings v23;
+        memset(&v23, 0xFF, sizeof(v23));
+        memset(&v23, 0, offsetof(KeithleySettings, holdMode));
+        v23.magic = SETTINGS_MAGIC_V23;
+        v23.theme = 2;
+        v23.beepEnabled = SETTINGS_BEEP_ALARMS;
+        v23.sdEnabled = 1;
+        v23.sdCsvFormat = SETTINGS_CSV_COMMA;
+        v23.rtcAging = 5;
+        v23.rtcAgingSet = 1;
+        EEPROM.put(0, v23);
+        EEPROM.commit();
+        settingsBegin();
+        bool isSet = false;
+        int8_t aging = settingsGetRtcAging(&isSet);
+        CHECK(settingsGetTheme() == 2 && settingsGetBeepMode() == SETTINGS_BEEP_ALARMS && settingsGetSdEnabled() &&
+              settingsGetSdCsvFormat() == SETTINGS_CSV_COMMA && isSet && aging == 5, "0xB2 migration keeps everything");
+        CHECK(settingsGetHoldMode() == CONFIG_DEFAULT_HOLD_MODE, "HOLD mode gets its default");
+        int commits = EEPROM.commits;
+        settingsSetHoldModeDeferred(SETTINGS_HOLD_AUTO);
+        CHECK(EEPROM.commits == commits && settingsGetHoldMode() == SETTINGS_HOLD_AUTO, "HOLD mode: in RAM at once");
+        fakeMillisOffset() += CONFIG_SETTINGS_DEFERRED_SAVE_MS + 10;
+        settingsPoll();
+        settingsBegin();
+        CHECK(EEPROM.commits == commits + 1 && settingsGetHoldMode() == SETTINGS_HOLD_AUTO, "HOLD mode persisted (deferred)");
+        settingsSetHoldModeDeferred(9);
+        CHECK(settingsGetHoldMode() == SETTINGS_HOLD_MANUAL, "out of range -> MANUAL");
+        printf("settings 0xB3: struct %u bytes\n", (unsigned)sizeof(KeithleySettings));
     }
 
     // ---- unknown magic -> defaults ----

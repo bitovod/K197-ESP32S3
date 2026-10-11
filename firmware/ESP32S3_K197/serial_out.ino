@@ -34,9 +34,13 @@
 //                    for why, and HandleHelpDetail() below for the
 //                    reply format and error cases (no RTC wired up,
 //                    RTC lost power)
-//   SYSTem:BEEP <ON|OFF> / ?   enables/disables every acoustic signal
-//                    (beeper.h/beeper.ino) - currently just the
-//                    one-shot startup chirp
+//   SYSTem:BEEP <ON|ALARm|OFF> / ?   (v23: ALARm) every sound, only the
+//                    alarms (limit alarm, SD card alarm), or none
+//                    (beeper.h/beeper.ino)
+//   MEASure:HOLD <ON|AUTO|OFF> / ?   (v24) DATA HOLD of the LCD replica (hold.h)
+//   MMEMory:LOG <ON|OFF> / ?   (v23) SD card logging (sdlog.h)
+//   MMEMory:FORMat <COMMa|SEMicolon> / ?   (v23) CSV format of the SD files
+//   MMEMory:STATe?   (v23) state of the SD card logging
 //   SYSTem:LANGuage <CZ|EN> / ?   (v15) language of the help screens and
 //                    of the graph settings screen on the display (not of
 //                    this SCPI help, which stays English)
@@ -74,6 +78,9 @@
 //   LOG:MIN?/MAX?/AVERage?/MEDian? [<function>] [<first> <last>]
 //                                 statistics over the same
 //                                 range/numbering/filter
+//   LOG:SDEViation?/TREND? [<function>] [<first> <last>]
+//                                 v25: standard deviation, trend
+//                                 per hour (same range/filter)
 // All six SYSTem:* settings that have one (FORMat/AUTO/THEMe/DEBUG/
 // BEEP/COMM) persist across power cycles via settings.h/settings.ino
 // (emulated EEPROM); the reading log itself does not (see datalog.h).
@@ -111,6 +118,8 @@
 #include "buttons.h"   // v16: SYSTem:DIAGnostic? (button task handle)
 #include "alarm.h"     // v17: CALCulate:LIMit:*
 #include "marker.h"    // v18: LOG:MARKer, MEASure:TRIGger MARK
+#include "sdlog.h"     // v23: MMEMory:*, SYSTem:DIAGnostic? SD lines
+#include "hold.h"      // v24: MEASure:HOLD
 #include <esp_heap_caps.h>
 #include <Vrekrer_scpi_parser.h>
 #include <math.h>
@@ -463,6 +472,7 @@ static void HandleHelp(SCPI_C commands, SCPI_P parameters, Stream &interface)
     interface.println(F("MEASure? / FETCh?                                 aliases of READ?"));
     interface.println(F("MEASure:TRIGger <INT|EXT|MARK> / ?                INT = AUTO, EXT = send on rear trigger, MARK = marker"));
     interface.println(F("MEASure:AUTO <ON|OFF|0|NNN> / ?                   same as SYSTem:AUTO"));
+    interface.println(F("MEASure:HOLD <ON|AUTO|OFF> / ?                    DATA HOLD / AUTO HOLD of the display"));
     interface.println(F("SYSTem:FORMat <0|1|2> / ?                         READ?/AUTO output format"));
     interface.println(F("SYSTem:AUTO <ON|OFF|0|NNN> / ?                    automatic/periodic sending"));
     interface.println(F("SYSTem:THEMe <0..N-1> / ?                         display color theme"));
@@ -471,7 +481,7 @@ static void HandleHelp(SCPI_C commands, SCPI_P parameters, Stream &interface)
     interface.println(F("SYSTem:DEBUG:PORT <UART|USB> / ?                  where debug messages go"));
     interface.println(F("SYSTem:TIME <YYYY> <MM> <DD> <hh> <mm> <ss> / ?   DS3231 RTC date/time"));
     interface.println(F("SYSTem:TIME:AGINg <-128..127> / ?                 RTC rate trim (+1 = ~0.1 ppm slower)"));
-    interface.println(F("SYSTem:BEEP <ON|OFF> / ?                          acoustic signalling on/off"));
+    interface.println(F("SYSTem:BEEP <ON|ALARm|OFF> / ?                    all sounds / only alarms / none"));
     interface.println(F("SYSTem:COMM <UART|USB> / ?                        which port SCPI itself uses"));
     interface.println(F("SYSTem:LANGuage <CZ|EN> / ?                       language of the help on the display"));
     interface.println(F("SYSTem:DIAGnostic? / SYSTem:DIAGnostic:CLEar      memory, stacks, timings / zero the maxima"));
@@ -490,6 +500,10 @@ static void HandleHelp(SCPI_C commands, SCPI_P parameters, Stream &interface)
     interface.println(F("LOG:DATA? [<function>] [<first> <last>]           CSV dump"));
     interface.println(F("LOG:MARKer / LOG:MARKer? [<function>] [<first> <last>]   set a marker / CSV of the marked records"));
     interface.println(F("LOG:MIN?/MAX?/AVERage?/MEDian? [<function>] [<first> <last>]   statistics"));
+    interface.println(F("LOG:SDEViation?/TREND? [<function>] [<first> <last>]   std deviation / trend per hour"));
+    interface.println(F("MMEMory:LOG <ON|OFF> / ?                          SD card logging on/off"));
+    interface.println(F("MMEMory:FORMat <COMMa|SEMicolon> / ?              CSV format of the SD files"));
+    interface.println(F("MMEMory:STATe?                                    SD card state, file, free space"));
 }
 
 // *HLP:DETail? / HELP:DETail? (serialOutBegin()) - the full command
@@ -652,12 +666,13 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  query reads the chip; ERROR without an RTC."));
     interface.println();
 
-    interface.println(F("SYSTem:BEEP <ON|OFF>"));
+    interface.println(F("SYSTem:BEEP <ON|ALARm|OFF>"));
     interface.println(F("SYSTem:BEEP?"));
-    interface.println(F("  Enables/disables every acoustic signal: start-up chirp,"));
-    interface.println(F("  key clicks, log-clear and settings confirmations, the"));
-    interface.println(F("  limit alarm and the marker double beep. Default ON."));
-    interface.println(F("  Persists across power cycles."));
+    interface.println(F("  ON = every sound: start-up chirp, key clicks, log-clear"));
+    interface.println(F("  and settings confirmations, the marker double beep and"));
+    interface.println(F("  the alarms. ALARm = only the alarms (limit alarm, SD card"));
+    interface.println(F("  alarm). OFF = no sound at all. Default ON. Persists across"));
+    interface.println(F("  power cycles. Same as SOUND on the DMM settings screen."));
     interface.println();
 
     interface.println(F("SYSTem:COMM <UART|USB>"));
@@ -686,7 +701,8 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  every task (bytes) next to its configured size, render /"));
     interface.println(F("  blit / UI loop times (last, max, microseconds), the last and"));
     interface.println(F("  longest graph build and statistics job (milliseconds), log"));
-    interface.println(F("  fill and covered time, dropped debug messages."));
+    interface.println(F("  fill and covered time, dropped debug messages, v23: SD card"));
+    interface.println(F("  logging (state, files, records, backlog, write times)."));
     interface.println(F("SYSTem:DIAGnostic:CLEar"));
     interface.println(F("  Zeroes the maxima (render/blit/UI loop, graph build,"));
     interface.println(F("  statistics job) - e.g. before a test. Stack and heap"));
@@ -735,6 +751,51 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  BEEP = intermittent beep + blinking triangle above the"));
     interface.println(F("  minus sign, ARROW = triangle only (SYSTem:BEEP OFF also"));
     interface.println(F("  silences the beep)."));
+    interface.println();
+
+    interface.println(F("--- DATA HOLD (v24; STO held 1 s on the display) ---"));
+    interface.println(F("MEASure:HOLD <ON|AUTO|OFF>"));
+    interface.println(F("MEASure:HOLD?"));
+    interface.println(F("  Freezes the reading on the display (only there: READ?, the"));
+    interface.println(F("  log, statistics, graph, alarm and SD card stay live)."));
+    interface.println(F("  ON = the reading shown now, with a marker (TAG). AUTO ="));
+    interface.println(F("  AUTO HOLD: HOLD blinks until a stable reading comes:"));
+    interface.print(F("  "));
+    interface.print(CONFIG_HOLD_AUTO_READINGS);
+    interface.print(F(" readings within +-"));
+    interface.print(CONFIG_HOLD_AUTO_TOLERANCE_COUNTS);
+    interface.print(F(" counts, not OL, at least "));
+    interface.print(CONFIG_HOLD_AUTO_MIN_COUNTS);
+    interface.println(F(" counts)."));
+    interface.println(F("  It is held with HOLD + AUTO lit, a beep and a marker; a new"));
+    interface.println(F("  stable reading that differs is captured the same way, a"));
+    interface.println(F("  function change waits again. OFF = live. Query: OFF, ON,"));
+    interface.println(F("  AUTO WAIT or AUTO HELD. Not persisted (the front-panel kind"));
+    interface.println(F("  MANUAL / AUTO on the DMM settings screen is)."));
+    interface.println();
+
+    interface.println(F("--- SD card (v23) ---"));
+    interface.println(F("MMEMory:LOG <ON|OFF> / ?"));
+    interface.println(F("  Copies the reading log to CSV files on the SD card. A new"));
+    interface.println(F("  file at every change of the function, after the K197 was"));
+    interface.println(F("  switched on and after a card was inserted (not at midnight):"));
+    interface.println(F("  /K197/YYYY-MM/K197_YYYY-MM-DD_hh-mm-ss_FUN.csv. Written every"));
+    interface.print(F("  "));
+    interface.print(CONFIG_SD_FLUSH_MS / 1000);
+    interface.println(F(" s and at once on a marker, a function change, the K197"));
+    interface.println(F("  switched off and OFF here (then the card is unmounted and"));
+    interface.println(F("  may be taken out). Missing / full card or a write error"));
+    interface.println(F("  while ON: SD! blinks in place of BAT and an alarm beeps (the"));
+    interface.println(F("  first key press silences it). Records still in PSRAM are"));
+    interface.println(F("  written to the next card. Saved at once; default OFF."));
+    interface.println(F("MMEMory:FORMat <COMMa|SEMicolon> / ?"));
+    interface.println(F("  COMMa = ',' between the fields, decimal point (like"));
+    interface.println(F("  LOG:DATA?). SEMicolon = ';' and a decimal comma (Czech"));
+    interface.println(F("  Excel). Applies to new lines; saved at once."));
+    interface.println(F("MMEMory:STATe?"));
+    interface.println(F("  <state>,<file>,<records in the file>,<free MB>,<backlog>"));
+    interface.println(F("  state: OFF, NOCARD, READY, LOGGING, FULL, ERROR; backlog ="));
+    interface.println(F("  records of the log not on the card yet."));
     interface.println();
 
     interface.println(F("--- Reading log ---"));
@@ -813,6 +874,12 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  is computed from an evenly-spread sample rather than"));
     interface.println(F("  every record, to bound its memory use - MIN/MAX/"));
     interface.println(F("  AVERage are always exact, whatever the range size."));
+    interface.println();
+    interface.println(F("LOG:SDEViation? / LOG:TREND? [<function>] [<first> <last>]"));
+    interface.println(F("  SDEViation: sample standard deviation (n - 1), base units."));
+    interface.println(F("  TREND: least-squares slope over the RTC time, base units"));
+    interface.println(F("  per HOUR (records without an RTC timestamp are left out)."));
+    interface.println(F("  No reply without a result (fewer than 2 / 3 records)."));
     interface.println();
 
     interface.println(F("--- General ---"));
@@ -969,6 +1036,47 @@ static void HandleSystemAutoQuery(SCPI_C commands, SCPI_P parameters, Stream &in
         interface.println("OFF");
     else
         interface.println(settingsGetAutoIntervalSeconds());
+}
+
+// ---- MEASure:HOLD (v24, DATA HOLD - hold.h) ----
+// ON = manual HOLD of the reading shown now (+ a marker), AUTO = AUTO HOLD,
+// OFF = live. Only the LCD replica; READ? and the log stay live.
+static void HandleMeasHoldSet(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    if (parameters.Size() < 1)
+    {
+        interface.println(F("ERROR: MEASure:HOLD needs a value: ON, AUTO or OFF"));
+        return;
+    }
+    String param(parameters[0]);
+    param.trim();
+    if (param.equalsIgnoreCase("ON") || param == "1")
+    {
+        holdStart(SETTINGS_HOLD_MANUAL, (uint32_t)millis(), true);
+        interface.println(F("OK: MEASure:HOLD ON"));
+    }
+    else if (param.equalsIgnoreCase("AUTO"))
+    {
+        holdStart(SETTINGS_HOLD_AUTO, (uint32_t)millis(), false);
+        interface.println(F("OK: MEASure:HOLD AUTO"));
+    }
+    else if (param.equalsIgnoreCase("OFF") || param == "0")
+    {
+        holdStop();
+        interface.println(F("OK: MEASure:HOLD OFF"));
+    }
+    else
+    {
+        interface.print(F("ERROR: MEASure:HOLD value must be ON, AUTO or OFF, got \""));
+        interface.print(param);
+        interface.println('"');
+    }
+}
+
+static void HandleMeasHoldQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    uint8_t st = holdState();
+    interface.println(st == HOLD_STATE_MANUAL ? "ON" : (st == HOLD_STATE_AUTO_WAIT ? "AUTO WAIT" : (st == HOLD_STATE_AUTO_HELD ? "AUTO HELD" : "OFF")));
 }
 
 // MEASure:TRIGger <INT|EXT> (v13) - see scpiTriggerSource above.
@@ -1455,24 +1563,30 @@ static void HandleSystemBeepSet(SCPI_C commands, SCPI_P parameters, Stream &inte
 {
     if (parameters.Size() < 1)
     {
-        interface.println(F("ERROR: SYSTem:BEEP needs a value: ON or OFF"));
+        interface.println(F("ERROR: SYSTem:BEEP needs a value: ON, ALARm or OFF"));
         return;
     }
     String param(parameters[0]);
     param.trim();
-    if (param.equalsIgnoreCase("ON"))
+    // v23: three values - every sound, only the alarms, none
+    if (param.equalsIgnoreCase("ON") || param.equalsIgnoreCase("ALL") || param == "1")
     {
-        settingsSetBeepEnabled(true);
+        settingsSetBeepMode(SETTINGS_BEEP_ALL);
         interface.println(F("OK: SYSTem:BEEP ON"));
     }
-    else if (param.equalsIgnoreCase("OFF"))
+    else if (param.equalsIgnoreCase("ALAR") || param.equalsIgnoreCase("ALARM") || param.equalsIgnoreCase("ALARMS"))
     {
-        settingsSetBeepEnabled(false);
+        settingsSetBeepMode(SETTINGS_BEEP_ALARMS);
+        interface.println(F("OK: SYSTem:BEEP ALARM"));
+    }
+    else if (param.equalsIgnoreCase("OFF") || param == "0")
+    {
+        settingsSetBeepMode(SETTINGS_BEEP_OFF);
         interface.println(F("OK: SYSTem:BEEP OFF"));
     }
     else
     {
-        interface.print(F("ERROR: SYSTem:BEEP value must be ON or OFF, got \""));
+        interface.print(F("ERROR: SYSTem:BEEP value must be ON, ALARm or OFF, got \""));
         interface.print(param);
         interface.println('"');
     }
@@ -1480,7 +1594,90 @@ static void HandleSystemBeepSet(SCPI_C commands, SCPI_P parameters, Stream &inte
 
 static void HandleSystemBeepQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
 {
-    interface.println(settingsGetBeepEnabled() ? "ON" : "OFF");
+    uint8_t mode = settingsGetBeepMode();
+    interface.println(mode == SETTINGS_BEEP_ALL ? "ON" : (mode == SETTINGS_BEEP_ALARMS ? "ALARM" : "OFF"));
+}
+
+// ---- MMEMory:* (v23, SD card logging - sdlog.h) ----
+
+static void HandleMmemLogSet(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    if (parameters.Size() < 1)
+    {
+        interface.println(F("ERROR: MMEMory:LOG needs a value: ON or OFF"));
+        return;
+    }
+    String param(parameters[0]);
+    param.trim();
+    if (param.equalsIgnoreCase("ON") || param == "1")
+    {
+        settingsSetSdEnabled(true);
+        interface.println(F("OK: MMEMory:LOG ON"));
+    }
+    else if (param.equalsIgnoreCase("OFF") || param == "0")
+    {
+        settingsSetSdEnabled(false);
+        interface.println(F("OK: MMEMory:LOG OFF (the card is unmounted within a moment)"));
+    }
+    else
+    {
+        interface.print(F("ERROR: MMEMory:LOG value must be ON or OFF, got \""));
+        interface.print(param);
+        interface.println('"');
+    }
+}
+
+static void HandleMmemLogQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    interface.println(settingsGetSdEnabled() ? "ON" : "OFF");
+}
+
+static void HandleMmemFormatSet(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    if (parameters.Size() < 1)
+    {
+        interface.println(F("ERROR: MMEMory:FORMat needs a value: COMMa or SEMicolon"));
+        return;
+    }
+    String param(parameters[0]);
+    param.trim();
+    if (param.equalsIgnoreCase("COMM") || param.equalsIgnoreCase("COMMA") || param.equalsIgnoreCase("EN"))
+    {
+        settingsSetSdCsvFormat(SETTINGS_CSV_COMMA);
+        interface.println(F("OK: MMEMory:FORMat COMMA"));
+    }
+    else if (param.equalsIgnoreCase("SEM") || param.equalsIgnoreCase("SEMI") || param.equalsIgnoreCase("SEMICOLON") ||
+             param.equalsIgnoreCase("CZ"))
+    {
+        settingsSetSdCsvFormat(SETTINGS_CSV_SEMICOLON);
+        interface.println(F("OK: MMEMory:FORMat SEMICOLON"));
+    }
+    else
+    {
+        interface.print(F("ERROR: MMEMory:FORMat value must be COMMa or SEMicolon, got \""));
+        interface.print(param);
+        interface.println('"');
+    }
+}
+
+static void HandleMmemFormatQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    interface.println(settingsGetSdCsvFormat() == SETTINGS_CSV_COMMA ? "COMMA" : "SEMICOLON");
+}
+
+static void HandleMmemStateQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    SdlogStats st;
+    sdlogGetStats(&st);
+    interface.print(sdlogStateName(st.state));
+    interface.print(',');
+    interface.print(st.file);
+    interface.print(',');
+    interface.print(st.fileRecords);
+    interface.print(',');
+    interface.print((uint32_t)(st.freeBytes / (1024ULL * 1024ULL)));
+    interface.print(',');
+    interface.println(st.backlog);
 }
 
 // SYSTem:COMM <UART|USB> / ? - see scpiStream's own comment near the
@@ -1642,6 +1839,7 @@ static void HandleSystemDiagQuery(SCPI_C commands, SCPI_P parameters, Stream &in
     scpiDiagStack(interface, "buttons (core 1)", buttonsGetTask(), CONFIG_BUTTONS_TASK_STACK_BYTES);
     scpiDiagStack(interface, "render/UI (core 1)", displayGetRenderTask(), CONFIG_DISPLAY_RENDER_TASK_STACK_BYTES);
     scpiDiagStack(interface, "comm/SCPI (core 1)", mainCommTaskHandle, CONFIG_CORE1_TASK_STACK_BYTES);
+    scpiDiagStack(interface, "SD (core 1)", sdlogGetTask(), CONFIG_SD_TASK_STACK_BYTES); // v23
 
     DisplayStats ds = displayGetStats();
     interface.print(F("render: last "));
@@ -1718,6 +1916,40 @@ static void HandleSystemDiagQuery(SCPI_C commands, SCPI_P parameters, Stream &in
     interface.println();
     interface.print(F("debug queue: dropped "));
     interface.println(debugLogDropped());
+    {
+        // v23: SD card logging (sdlog.h)
+        SdlogStats st;
+        sdlogGetStats(&st);
+        interface.print(F("sd: "));
+        interface.print(sdlogStateName(st.state));
+        if (st.problem)
+        {
+            interface.print(st.silenced ? F(" (alarm, silenced)") : F(" (alarm)"));
+        }
+        interface.print(F(", "));
+        interface.print(st.mounts);
+        interface.print(F(" mounts, "));
+        interface.print(st.files);
+        interface.print(F(" files, "));
+        interface.print(st.records);
+        interface.print(F(" records written, backlog "));
+        interface.print(st.backlog);
+        interface.print(F(", lost "));
+        interface.print(st.lostRecords);
+        interface.print(F(", write errors "));
+        interface.println(st.writeErrors);
+        interface.print(F("sd write: last "));
+        interface.print(st.lastWriteMs);
+        interface.print(F(" ms, max "));
+        interface.print(st.maxWriteMs);
+        interface.print(F(" ms, free "));
+        interface.print((uint32_t)(st.freeBytes / (1024ULL * 1024ULL)));
+        interface.print(F(" MB, file "));
+        interface.print(st.file[0] != '\0' ? st.file : "-");
+        interface.print(F(" ("));
+        interface.print(st.fileRecords);
+        interface.println(F(" records)"));
+    }
     // (suppressUnsolicitedOutput is one-shot: serialOutProcess() clears it after this pass)
 }
 
@@ -2145,6 +2377,26 @@ static void HandleLogMedian(SCPI_C commands, SCPI_P parameters, Stream &interfac
     datalogPrintMedian(interface, functionFilter.c_str(), first, last);
 }
 
+// v25 LOG:SDEViation? / LOG:TREND? [<function>] [<first> <last>] - the sample standard deviation (base units)
+// and the trend (base units per hour, least squares over the RTC time) - pages 2 and 3 of the statistics screen.
+static void HandleLogSdev(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    suppressUnsolicitedOutput = true;
+    String functionFilter;
+    long first, last;
+    parseLogArgs(parameters, &functionFilter, &first, &last);
+    datalogPrintSdev(interface, functionFilter.c_str(), first, last);
+}
+
+static void HandleLogTrend(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    suppressUnsolicitedOutput = true;
+    String functionFilter;
+    long first, last;
+    parseLogArgs(parameters, &functionFilter, &first, &last);
+    datalogPrintTrend(interface, functionFilter.c_str(), first, last);
+}
+
 // ---- CALCulate:LIMit:* (v17, limit alarm - alarm.h) ----
 
 // All parameter tokens, whether separated by commas (the library splits those)
@@ -2397,6 +2649,8 @@ void serialOutBegin()
     scpiParser.SetCommandTreeBase(F("MEASure"));
     scpiParser.RegisterCommand(F(":TRIGger"), &HandleMeasTriggerSet);
     scpiParser.RegisterCommand(F(":TRIGger?"), &HandleMeasTriggerQuery);
+    scpiParser.RegisterCommand(F(":HOLD"), &HandleMeasHoldSet); // v24 (one new token: HOLD)
+    scpiParser.RegisterCommand(F(":HOLD?"), &HandleMeasHoldQuery);
     scpiParser.RegisterCommand(F(":AUTO"), &HandleSystemAutoSet);
     scpiParser.RegisterCommand(F(":AUTO?"), &HandleSystemAutoQuery);
 
@@ -2452,6 +2706,13 @@ void serialOutBegin()
     scpiParser.RegisterCommand(F(":SIGNal"), &HandleLimitSignalSet);
     scpiParser.RegisterCommand(F(":SIGNal?"), &HandleLimitSignalQuery);
 
+    scpiParser.SetCommandTreeBase(F("MMEMory")); // v23: SD card (one new token: MMEMory)
+    scpiParser.RegisterCommand(F(":LOG"), &HandleMmemLogSet);
+    scpiParser.RegisterCommand(F(":LOG?"), &HandleMmemLogQuery);
+    scpiParser.RegisterCommand(F(":FORMat"), &HandleMmemFormatSet);
+    scpiParser.RegisterCommand(F(":FORMat?"), &HandleMmemFormatQuery);
+    scpiParser.RegisterCommand(F(":STATe?"), &HandleMmemStateQuery);
+
     scpiParser.SetCommandTreeBase(F("LOG"));
     scpiParser.RegisterCommand(F(":POINts?"), &HandleLogPoints);
     scpiParser.RegisterCommand(F(":CAPacity?"), &HandleLogCapacity);
@@ -2463,6 +2724,8 @@ void serialOutBegin()
     scpiParser.RegisterCommand(F(":MAX?"), &HandleLogMax);
     scpiParser.RegisterCommand(F(":AVERage?"), &HandleLogAverage);
     scpiParser.RegisterCommand(F(":MEDian?"), &HandleLogMedian);
+    scpiParser.RegisterCommand(F(":SDEViation?"), &HandleLogSdev); // v25
+    scpiParser.RegisterCommand(F(":TREND?"), &HandleLogTrend);     // v25
 
     // settingsBegin() (main sketch's setup(), before this call) has
     // already loaded the persisted theme and Y offset - apply both

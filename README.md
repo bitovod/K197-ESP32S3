@@ -11,10 +11,13 @@ measuring instrument: the ESP32 listens on the DMM's internal bus between its CP
 
 On top of a faithful replica of the original display it adds:
 
-- **Statistics**: average, median, maximum and minimum over 5 s … 6 h, live value, date and time.
+- **Statistics** over 5 s … 6 h on three pages: average, median, maximum, minimum; standard deviation (also
+  relative and in digits), MAX − MIN, number of readings; standard error of the mean and trend per minute / hour.
 - **Graph**: MIN/MAX band and average over 10 s … 24 h or the whole log. Y axis AUTO / ROBUST (one spike does
   not set the scale) / ZERO / suppressed zero (from ±1 count).
 - **Reading log** in PSRAM: about 600 000 readings (~50 h), timestamped by a DS3231 RTC with 10 ms resolution.
+- **SD card logging**: CSV files (one per function and per K197 power-on), "SD!" + alarm beep on card problems.
+- **DATA HOLD** (STO held): manual, or AUTO HOLD that captures every new stable reading with a beep.
 - **Limit alarm** per function: lower and/or upper limit, a triangle above the minus sign, an optional beep.
 - **Markers (TAG)**: REL + dB together, a foot switch on the rear trigger input, or SCPI. The marked reading is
   easy to find in the log and in the graph.
@@ -30,6 +33,8 @@ On top of a faithful replica of the original display it adds:
 | ![Statistics](docs/images/stats_grn.png) | ![Graph](docs/images/graph_markers_5min.png) |
 | ![Help](docs/images/help_en.png) | ![Alarm settings](docs/images/setup_alarm.png) |
 | ![Alarm: both limits watched](docs/images/lcd_alarm_both.png) | ![Marker: TAG lit](docs/images/lcd_tag.png) |
+| ![Statistics page 2](docs/images/stats_page2.png) | ![Statistics page 3](docs/images/stats_page3.png) |
+| ![AUTO HOLD captured a reading](docs/images/lcd_auto_hold.png) | ![SD card problem](docs/images/lcd_sd.png) |
 
 > All screenshots are rendered on a PC with the firmware's real drawing code (`tools/make_screenshots.sh`).
 > Photos of the instrument are to follow.
@@ -37,14 +42,14 @@ On top of a faithful replica of the original display it adds:
 ### Status
 
 In daily use on one instrument. The firmware is complete and tested on the hardware, and the host tests on a PC
-pass. Still being worked on: the power supply for the ESP32 and the display, the rear-panel trigger I/O hardware,
-and an SD card slot (planned).
+pass. Still being worked on: the power supply for the ESP32 and the display, the rear-panel trigger I/O hardware
+and the SD card slot (the SD card firmware is done and host-tested, the hardware is being built).
 
 ### Documentation
 
 | | |
 |---|---|
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | front-panel keys, screens, alarm, markers |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | front-panel keys, screens, alarm, markers, HOLD, SD card |
 | [docs/SCPI.md](docs/SCPI.md) | the SCPI command reference |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | parts, pins, wiring, power, safety notes |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | architecture, building, host tests, tools, lessons learned |
@@ -93,10 +98,14 @@ měření (asi 3,5 za sekundu).
 
 Kromě věrné repliky původního displeje přidává:
 
-- **Statistiku**: průměr, medián, maximum a minimum za 5 s až 6 h, aktuální hodnota, datum a čas.
+- **Statistiku** za 5 s až 6 h na třech stranách: průměr, medián, maximum, minimum; směrodatná odchylka (i
+  relativně a v digitech), MAX − MIN, počet měření; směrodatná chyba průměru a trend za minutu / hodinu.
 - **Graf**: pás MIN/MAX a průměr za 10 s až 24 h nebo za celý log. Osa Y AUTO / ROBUST (jedna špička nezmění
   měřítko) / ZERO / potlačená nula (od ±1 digitu).
 - **Log měření** v PSRAM: asi 600 000 odečtů (asi 50 h) s časem z RTC DS3231 v rozlišení 10 ms.
+- **Záznam na SD kartu**: soubory CSV (pro každou funkci a každé zapnutí K197), při potížích s kartou „SD!“
+  a pípání.
+- **DATA HOLD** (podržení STO): ruční, nebo AUTO HOLD, který s pípnutím zachytí každou novou ustálenou hodnotu.
 - **Alarm mezí** pro každou funkci zvlášť: dolní a/nebo horní mez, trojúhelník nad znaménkem mínus, volitelně
   pípání.
 - **Markery (TAG)**: REL + dB současně, nožní spínač na zadním vstupu triggeru nebo SCPI. Označená hodnota se pak
@@ -117,13 +126,13 @@ Fotky přístroje doplním.
 
 Projekt je v každodenním používání na jednom přístroji. Firmware je hotový a odzkoušený na hardwaru, testy na PC
 procházejí. Rozpracované zůstává napájení ESP32 a displeje, hardware zadních vstupů a výstupů triggeru a slot pro
-SD kartu (v plánu).
+SD kartu (firmware pro SD kartu je hotový a otestovaný na PC, hardware se staví).
 
 ### Dokumentace
 
 | | |
 |---|---|
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | ovládání, obrazovky, alarm, markery |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | ovládání, obrazovky, alarm, markery, HOLD, SD karta |
 | [docs/SCPI.md](docs/SCPI.md) | přehled příkazů SCPI |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | součástky, piny, zapojení, napájení, bezpečnost |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | architektura, překlad, testy na PC, nástroje, poučení |

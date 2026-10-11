@@ -238,6 +238,11 @@ void datalogPrintRange(Stream &interface, const char *functionFilter, long first
 // v18 LOG:MARKers?: the same CSV, only the records that carry a marker.
 void datalogPrintMarked(Stream &interface, const char *functionFilter, long first, long last);
 
+// v23: the indicators column of LOG:DATA? ("AUTO STO TAG SETTLE" ...) into a
+// buffer - the SD card log (sdlog.ino) writes the same text. 48 bytes are
+// always enough. Returns the length.
+size_t datalogFormatIndicators(char *buf, size_t bufSize, uint16_t indicatorBits);
+
 // Statistics over the same [first, last] numbering and optional
 // `functionFilter` - each prints a single scientific-notation number
 // (no status/prefix, since even a filtered range could still be
@@ -314,6 +319,12 @@ struct DatalogStats
     double average;
     double median;     // only meaningful when medianValid
     bool medianValid;  // false if the scratch memory for the median could not be allocated
+    // v25 (statistics pages 2 and 3)
+    double sdev;           // sample standard deviation (n - 1), base units; only meaningful when sdevValid
+    bool sdevValid;        // at least 2 records
+    double slopePerSecond; // trend: least-squares slope of the value over the RTC time, base units per second
+    bool slopeValid;       // at least 3 records with an RTC timestamp, spanning more than zero time
+    uint32_t slopeCount;   // records that went into the trend (those with an RTC timestamp)
 };
 
 // State of a running job - treat as opaque.
@@ -329,8 +340,22 @@ struct DatalogStatsJob
     double sum;
     double minimum;
     double maximum;
-    float *samples;       // values for the median (the static buffer in datalog.ino)
+    float *samples;       // values for the median (the static buffer in datalog.ino), NULL = no median
     long sampleCount;
+    // v25: standard deviation and trend. The values are shifted by the first one (ref) so that the sums
+    // of squares stay small numbers (no cancellation for a 1.23456 V reading with a microvolt spread);
+    // the time is in seconds after the first timestamped record of the range.
+    double ref;
+    double sumD;          // sum of (value - ref)
+    double sumD2;         // sum of (value - ref)^2
+    bool haveTime0;
+    uint32_t time0Seconds;
+    uint8_t time0Centis;
+    uint32_t countT;      // records with a timestamp
+    double sumT;
+    double sumTT;
+    double sumTD;
+    double sumDT;         // sum of (value - ref) over the timestamped records
 };
 
 // Resolves the range and prepares the job. If the log is empty or the
@@ -353,6 +378,19 @@ void datalogStatsAbort(DatalogStatsJob *job);
 // The same in one call (start + all steps + finish) - for callers that
 // know the range is small. Blocks for as long as the scan takes.
 bool datalogComputeStats(const char *functionFilter, long first, long last, DatalogStats *out);
+
+// v25: the same WITHOUT the median (medianValid false): it does not use the
+// shared scratch buffer, so it may run in any task while the user
+// interface's job is running (LOG:SDEViation?, LOG:TREND?).
+bool datalogComputeStatsNoMedian(const char *functionFilter, long first, long last, DatalogStats *out);
+
+// v25 LOG:SDEViation? / LOG:TREND? printers (same range numbering and filter
+// as LOG:AVERage?): the sample standard deviation in base units, and the
+// trend (least-squares slope over the RTC time) in base units per HOUR.
+// Nothing is printed when there is no result (fewer than 2 records; for the
+// trend fewer than 3 records with an RTC timestamp).
+void datalogPrintSdev(Stream &interface, const char *functionFilter, long first, long last);
+void datalogPrintTrend(Stream &interface, const char *functionFilter, long first, long last);
 
 // The first record (1-based, in the numbering above) that belongs to
 // the last `windowSeconds` seconds, to be used as `first` of a range

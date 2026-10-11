@@ -22,8 +22,14 @@
 // Call once from setup(), before any of the functions below.
 void beeperBegin();
 
+// v23: the sound setting has three values (SETTINGS_BEEP_*, settings.h):
+// every sound (ALL), only the alarms (ALARMS) or none (OFF). Every function
+// below except beeperAlarmAsync() is an ordinary sound - it plays only with
+// ALL. beeperAlarmAsync() is for the alarms (the limit alarm, the SD card
+// alarm): it plays with ALL and with ALARMS.
+
 // Turns the buzzer on, blocks for durationMs, turns it back off.
-// Silent, with no error, if SYSTem:BEEP is currently OFF - every
+// Silent, with no error, unless SYSTem:BEEP is ALL - every
 // higher-level beep (beeperPlayStartupChirp() below, and whatever
 // else gets added later) is expected to go through this one function
 // so that single setting gates all of them uniformly, rather than
@@ -47,6 +53,10 @@ void beeperClick();
 // short. Same SYSTem:BEEP gating. A new call while one is running restarts
 // the duration.
 void beeperBeepAsync(uint16_t durationMs);
+
+// v23: the same for an ALARM sound (limit alarm, SD card alarm): plays with
+// SYSTem:BEEP ALL or ALARM, silent only with OFF.
+void beeperAlarmAsync(uint16_t durationMs);
 
 // The long confirmation beep after the log was cleared from the front
 // panel, CONFIG_BEEP_LOG_CLEAR_MS long (config.h), non-blocking.
