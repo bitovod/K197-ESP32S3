@@ -43,7 +43,7 @@ static bool alarmLiveNegative = false; // minus sign (for OL)
 static double alarmLiveValue = 0.0;    // base units
 static uint8_t alarmLiveUnit = KEITHLEY_UNIT_NONE;
 static uint8_t alarmLiveDecimals = 0;
-static uint32_t alarmLiveSettle = 0; // v20: readings of this function so far (the first ones settle, no alarm)
+static bool alarmLiveSettling = false; // v20/v22: the newest reading is still settling (datalog.ino decides) - no alarm
 
 // The state last evaluated (written under alarmMux, read anywhere).
 static volatile uint8_t alarmState = ALARM_STATE_NONE;
@@ -99,9 +99,9 @@ static uint8_t alarmEvaluateLocked()
     {
         return ALARM_STATE_NONE;
     }
-    if (alarmLiveSettle < (uint32_t)CONFIG_DATALOG_SETTLE_READINGS)
+    if (alarmLiveSettling)
     {
-        return ALARM_STATE_ARMED; // v20: still settling after a change of the function - not judged yet
+        return ALARM_STATE_ARMED; // v20: still settling after a change of the function / power-on - not judged yet
     }
     uint8_t mode = alarmStoredMode[f];
     bool watchHigh = (mode == ALARM_MODE_UPPER || mode == ALARM_MODE_BOTH) && !isnan(alarmHigh[f]);
@@ -261,15 +261,10 @@ void alarmUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPos, u
     bool numeric = !overload && keithleyReadingToDouble(digits, dpPos, indicatorBits, unit, &value);
     uint8_t decimals = uiDecimalsFor(dpPos);
 
+    bool settling = datalogLastReadingSettling(); // v22: one rule with the log (dmmApplyFrame() logs first)
+
     portENTER_CRITICAL(&alarmMux);
-    if (function != alarmLiveFunction)
-    {
-        alarmLiveSettle = 0; // v20: a new function - its first readings are still settling
-    }
-    else if (alarmLiveSettle < 0xFFFFFFFFu)
-    {
-        alarmLiveSettle++;
-    }
+    alarmLiveSettling = settling;
     alarmLiveFunction = function;
     alarmLiveNumeric = numeric;
     alarmLiveOverload = overload && function != ALARM_FUNCTION_NONE;

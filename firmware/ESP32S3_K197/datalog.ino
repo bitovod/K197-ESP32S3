@@ -41,6 +41,10 @@ static uint32_t markSerials[DATALOG_MARK_RING];
 // v20: settling after a change of the function (capture task only)
 static const char *settleLastPrefix = NULL;
 static uint32_t settleReadings = 0;
+// v22: the K197 was off (or the ESP32 just started): the next function's settling is the long one
+static bool settlePowerOn = true;
+static uint32_t settleTarget = CONFIG_DATALOG_SETTLE_READINGS;
+static bool settleLast = false; // the newest reading was settling (alarm.ino)
 static uint32_t markCount = 0;
 
 // Guards every read AND write of writeIndex/recordCount/logBuffer[]
@@ -96,6 +100,13 @@ void datalogBegin()
     size_t freePsram = ESP.getFreePsram();
     size_t usable = (freePsram > DATALOG_PSRAM_RESERVE_BYTES) ? (freePsram - DATALOG_PSRAM_RESERVE_BYTES) : 0;
     uint32_t capacity = (uint32_t)(usable / sizeof(LogRecord));
+#if CONFIG_DATALOG_TEST_CAPACITY > 0
+    // v21 TEST: a small log, so that it wraps soon (config.h)
+    if (capacity > (uint32_t)CONFIG_DATALOG_TEST_CAPACITY)
+    {
+        capacity = (uint32_t)CONFIG_DATALOG_TEST_CAPACITY;
+    }
+#endif
 
     while (capacity >= DATALOG_MIN_CAPACITY)
     {
@@ -128,8 +139,20 @@ void datalogBegin()
     // persisted SYSTem:DEBUG value by the time this runs, see
     // ESP32S3_K197.ino's setup() ordering).
     // v13: through the debug queue (SYSTem:DEBUG:PORT), always - part of the boot report.
-    debugLogAlways("boot: log capacity %lu records (%lu KB PSRAM)", (unsigned long)logCapacity,
-                   (unsigned long)((logCapacity * sizeof(LogRecord)) / 1024));
+    debugLogAlways("boot: log capacity %lu records (%lu KB PSRAM)%s", (unsigned long)logCapacity,
+                   (unsigned long)((logCapacity * sizeof(LogRecord)) / 1024),
+                   (CONFIG_DATALOG_TEST_CAPACITY > 0) ? " - TEST LIMIT (config.h CONFIG_DATALOG_TEST_CAPACITY)" : "");
+}
+
+void datalogNoteDmmOff()
+{
+    settlePowerOn = true;
+    settleLastPrefix = NULL;
+}
+
+bool datalogLastReadingSettling()
+{
+    return settleLast;
 }
 
 void datalogUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPos,
@@ -149,6 +172,7 @@ void datalogUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPos,
     else if (!keithleyReadingToDouble(digits, dpPos, indicatorBits, unit, &value))
     {
         settleLastPrefix = NULL; // v20: self-test / no DMM: the readings after it settle again
+        settleLast = true;
         return; // not overload, not an ordinary number either (self-test, ...) - don't log it
     }
 
@@ -159,8 +183,12 @@ void datalogUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPos,
     {
         settleLastPrefix = prefix;
         settleReadings = 0;
+        // v22: the first function after the K197 was switched on settles for much longer
+        settleTarget = settlePowerOn ? (uint32_t)CONFIG_DATALOG_SETTLE_POWERON_READINGS : (uint32_t)CONFIG_DATALOG_SETTLE_READINGS;
+        settlePowerOn = false;
     }
-    bool settling = settleReadings < (uint32_t)CONFIG_DATALOG_SETTLE_READINGS;
+    bool settling = settleReadings < settleTarget;
+    settleLast = settling;
     if (settleReadings < 0xFFFFFFFFu)
         settleReadings++;
     if (settling)

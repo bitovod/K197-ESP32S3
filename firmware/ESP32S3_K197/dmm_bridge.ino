@@ -175,6 +175,12 @@ static bool dmmFirstFrameReported = false; // v13 boot report
 // dmmCheckNoData() reports and clears both per window.
 #define DMM_SCK_COUNT_CAP 20000
 static volatile uint32_t dmmCsEdges = 0;
+// v22: millis() of the last CS falling edge (DMM off = none for CONFIG_DMM_OFF_QUIET_MS)
+static volatile uint32_t dmmLastCsEdgeMs = 0;
+// v22: the DMM is switched off (no CS edge for a whole no-data period and CS low); read by power.ino
+static volatile bool dmmOff = false;
+// v22: power.ino asks for an SPI slave restart right after a wake-up from light sleep
+static volatile bool dmmRestartRequested = false;
 static volatile uint32_t dmmSckEdges = 0;
 static volatile bool dmmSckCapped = false;
 static bool dmmSckCounting = false;
@@ -183,6 +189,7 @@ static void dmmCsEdgeIsr(void *arg)
 {
     (void)arg;
     dmmCsEdges = dmmCsEdges + 1; // single writer; no ++ on a volatile (C++20)
+    dmmLastCsEdgeMs = (uint32_t)millis();
 }
 
 static void dmmSckEdgeIsr(void *arg)
@@ -382,6 +389,52 @@ static const uint8_t dmmErrSegbits[DMM_DIGIT_COUNT] = {
     0x51  // 7: a b c
 };
 
+// v22: "oFF197" - the K197 is switched off (not a single CS edge for a whole
+// no-data period, CS low through the input divider). Small o: a capital O
+// would read as a zero.
+static const uint8_t dmmOffSegbits[DMM_DIGIT_COUNT] = {
+    0x66, // o: c d e g
+    0x2B, // F: a e f g
+    0x2B, // F
+    0x50, // 1
+    0x5B, // 9 (open)
+    0x51  // 7
+};
+
+bool dmmIsOff()
+{
+    return dmmOff;
+}
+
+void dmmRequestBusRestart()
+{
+    dmmRestartRequested = true;
+}
+
+// v22: the K197 looks switched off - CS low now, and no CS edge for the
+// last CONFIG_DMM_OFF_QUIET_MS. Not "none in the whole period": while its
+// supply decays the K197 still sends a few broken frames, and the restart of
+// the SPI slave itself puts a glitch or two on the pin. A running K197 (or one
+// that sends frames the capture cannot use) gives a CS edge every ~285 ms.
+static bool dmmLooksOff()
+{
+    return ((uint32_t)((uint32_t)millis() - dmmLastCsEdgeMs) >= (uint32_t)CONFIG_DMM_OFF_QUIET_MS) &&
+           (digitalRead(dmmCsPin) == LOW);
+}
+
+// v22: Err197 or oFF197 on the LCD replica, from what the last period showed.
+static void dmmShowNoData(bool off)
+{
+    setReadingSegments(off ? dmmOffSegbits : dmmErrSegbits, -1);
+    setIndicators(0);
+    setUnit(KEITHLEY_UNIT_NONE);
+    if (off)
+    {
+        uiRequestHome();     // whatever screen was open: back to the main display, which says oFF197
+        datalogNoteDmmOff(); // v22: the readings after it is switched on again settle for longer
+    }
+}
+
 // Called by the capture task after every dmmCaptureFrame() (at least every
 // DMM_CAPTURE_TIMEOUT_MS). If no valid frame has arrived for
 // CONFIG_DMM_NO_DATA_MS, shows "Err197" on the LCD replica (no indicators,
@@ -391,24 +444,44 @@ static const uint8_t dmmErrSegbits[DMM_DIGIT_COUNT] = {
 void dmmCheckNoData()
 {
     uint32_t nowMs = (uint32_t)millis();
+    if (dmmRestartRequested)
+    {
+        // v22: just woken from light sleep - the peripheral may not have survived it, start it afresh
+        dmmRestartRequested = false;
+        dmmBusRestart();
+    }
     if ((uint32_t)(nowMs - dmmLastValidMs) < (uint32_t)CONFIG_DMM_NO_DATA_MS)
     {
         return;
     }
+    bool decidedNow = false;
     if (!dmmNoDataShown)
     {
         dmmNoDataShown = true;
-        setReadingSegments(dmmErrSegbits, -1);
-        setIndicators(0);
-        setUnit(KEITHLEY_UNIT_NONE);
+        decidedNow = true;
+        // v22: CS quiet for a while and low = the K197 is switched off
+        dmmOff = dmmLooksOff();
+        dmmShowNoData(dmmOff);
         const char blank[DMM_DIGIT_COUNT] = {' ', ' ', ' ', ' ', ' ', ' '};
         uiUpdateLiveReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // not a reading -> placeholder
         alarmUpdateReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // v17: no reading -> no alarm
         datalogUpdateReading(blank, -1, 0, KEITHLEY_UNIT_NONE); // v20: not logged, but the next readings settle again
-        debugLogAlways("DMM: no valid frame for %u ms - showing Err197", (unsigned)CONFIG_DMM_NO_DATA_MS);
+        debugLogAlways("DMM: no valid frame for %u ms - showing %s", (unsigned)CONFIG_DMM_NO_DATA_MS, dmmOff ? "oFF197" : "Err197");
     }
     if ((uint32_t)(nowMs - dmmLastRestartMs) >= (uint32_t)CONFIG_DMM_NO_DATA_MS)
     {
+        // v22: every further silent period decides again (the K197 may be switched off later, or start sending garbage)
+        bool off = dmmLooksOff();
+        if (decidedNow)
+        {
+            off = dmmOff; // decided a moment ago above, over the same period
+        }
+        if (off != dmmOff)
+        {
+            dmmOff = off;
+            dmmShowNoData(off);
+            debugLogAlways("DMM: now showing %s", off ? "oFF197" : "Err197");
+        }
         // Edges seen during the silent period just ended: 0 CS edges = the
         // K197 sent nothing at all (its CPU is not running); edges but no
         // usable frame = something arrives and the capture side is suspect.
@@ -615,6 +688,7 @@ void dmmApplyFrame(int byteCount)
         if (anyBit)
         {
             dmmLastValidMs = (uint32_t)millis();
+            dmmOff = false;
             if (!dmmFirstFrameReported)
             {
                 dmmFirstFrameReported = true;

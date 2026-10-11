@@ -12,7 +12,8 @@ measuring instrument: the ESP32 listens on the DMM's internal bus between its CP
 On top of a faithful replica of the original display it adds:
 
 - **Statistics**: average, median, maximum and minimum over 5 s … 6 h, live value, date and time.
-- **Graph**: MIN/MAX band and average over 10 s … 24 h or the whole log. Y axis AUTO / ZERO / suppressed zero.
+- **Graph**: MIN/MAX band and average over 10 s … 24 h or the whole log. Y axis AUTO / ROBUST (one spike does
+  not set the scale) / ZERO / suppressed zero (from ±1 count).
 - **Reading log** in PSRAM: about 600 000 readings (~50 h), timestamped by a DS3231 RTC with 10 ms resolution.
 - **Limit alarm** per function: lower and/or upper limit, a triangle above the minus sign, an optional beep.
 - **Markers (TAG)**: REL + dB together, a foot switch on the rear trigger input, or SCPI. The marked reading is
@@ -20,7 +21,9 @@ On top of a faithful replica of the original display it adds:
 - **SCPI** over an isolated UART (CH340 on the rear panel) or USB: readings, the log as CSV, statistics, settings,
   diagnostics.
 - **Rear-panel trigger I/O**: METERING COMPLETE output and EXTERNAL TRIGGER input (emulated, via optocouplers).
-- Context help on the display in Czech and English, 8 colour themes, settings kept in EEPROM.
+- **K197 switched off**: `oFF197`, the log can still be browsed, the ESP32 sleeps (light sleep) until the K197,
+  a key or SCPI wakes it - the log survives as long as the ESP32 has power.
+- Context help on the display in Czech and English, 8 colour themes, settings kept in EEPROM, RTC rate trim.
 
 | | |
 |---|---|
@@ -91,7 +94,8 @@ měření (asi 3,5 za sekundu).
 Kromě věrné repliky původního displeje přidává:
 
 - **Statistiku**: průměr, medián, maximum a minimum za 5 s až 6 h, aktuální hodnota, datum a čas.
-- **Graf**: pás MIN/MAX a průměr za 10 s až 24 h nebo za celý log. Osa Y AUTO / ZERO / potlačená nula.
+- **Graf**: pás MIN/MAX a průměr za 10 s až 24 h nebo za celý log. Osa Y AUTO / ROBUST (jedna špička nezmění
+  měřítko) / ZERO / potlačená nula (od ±1 digitu).
 - **Log měření** v PSRAM: asi 600 000 odečtů (asi 50 h) s časem z RTC DS3231 v rozlišení 10 ms.
 - **Alarm mezí** pro každou funkci zvlášť: dolní a/nebo horní mez, trojúhelník nad znaménkem mínus, volitelně
   pípání.
@@ -101,7 +105,10 @@ Kromě věrné repliky původního displeje přidává:
   nastavení, diagnostika.
 - **Zadní vstupy a výstupy triggeru**: výstup METERING COMPLETE a vstup EXTERNAL TRIGGER (emulované, přes
   optočleny).
-- Kontextová nápověda na displeji česky a anglicky, 8 barevných témat, nastavení uložené v EEPROM.
+- **Vypnutý K197**: `oFF197`, v logu se dá dál listovat, ESP32 spí (light sleep), dokud ho nevzbudí K197,
+  tlačítko nebo SCPI - log zůstane, dokud má ESP32 napájení.
+- Kontextová nápověda na displeji česky a anglicky, 8 barevných témat, nastavení uložené v EEPROM, dolaďování
+  chodu RTC.
 
 Obrázky obrazovek nahoře jsou vykreslené na PC skutečným kreslicím kódem firmwaru (`tools/make_screenshots.sh`).
 Fotky přístroje doplním.

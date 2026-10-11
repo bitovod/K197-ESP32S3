@@ -39,3 +39,6 @@ cp "$SKETCH"/* $B/
 cp stubs/rtc_stub.h $B/rtc.h
 g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-type-limits -Istubs -I$B test_graph.cpp -o /tmp/k197_test_graph
 /tmp/k197_test_graph $K197_PREVIEW_DIR
+echo "== v22: settling after a function change / after the K197 was switched on (real constants)"
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-type-limits -Istubs -I$B test_settle.cpp -o /tmp/k197_test_settle
+/tmp/k197_test_settle

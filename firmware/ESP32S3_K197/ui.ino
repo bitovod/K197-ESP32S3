@@ -285,7 +285,8 @@ static bool uiUpdateStatsScreen(bool force)
             return force; // no reading yet - the placeholder texts stay
         }
         uiFormatLiveText(uiScene.live, sizeof(uiScene.live), digits, dpPos, indicators);
-        uiUnitText(unit, uiScene.unit, sizeof(uiScene.unit));
+        // v22: without a unit (K197 off, Err197) the unit of the statistics still shown stays
+        uiUnitText((unit == KEITHLEY_UNIT_NONE && uiHaveContext) ? uiCtxUnit : unit, uiScene.unit, sizeof(uiScene.unit));
         changed = true;
     }
 
@@ -294,6 +295,14 @@ static bool uiUpdateStatsScreen(bool force)
         char filter[8];
         uiFunctionFilter(filter, sizeof(filter), keithleyFunctionPrefix(unit, indicators));
         uint8_t decimals = uiDecimalsFor(dpPos);
+        if (filter[0] == '\0' && uiHaveContext && uiCtxFilter[0] != '\0')
+        {
+            // v22: not a reading (the K197 switched off, Err197, its self-test): the statistics of the last
+            // function stay, so the log can still be looked at - the next real reading decides again
+            snprintf(filter, sizeof(filter), "%s", uiCtxFilter);
+            unit = uiCtxUnit;
+            decimals = uiCtxDecimals;
+        }
 
         bool contextChanged = !uiHaveContext || unit != uiCtxUnit || decimals != uiCtxDecimals ||
                               uiInterval != uiCtxInterval || strcmp(filter, uiCtxFilter) != 0;
@@ -809,6 +818,11 @@ static void uiUpdateGraphLive()
     seq = uiLiveSeq;
     portEXIT_CRITICAL(&uiLiveMux);
 
+    // v22: the last reading with a measurement function - kept while there is none (K197 off, Err197), so the
+    // graph still shows that function's log instead of "NO READING"
+    static GraphLive lastValid;
+    static bool haveLastValid = false;
+
     GraphLive live;
     memset(&live, 0, sizeof(live)); // the graph compares the whole struct, so no stale bytes
     if (seq != 0)
@@ -819,13 +833,43 @@ static void uiUpdateGraphLive()
         live.decimals = uiDecimalsFor(dpPos);
         uiFormatLiveText(live.text, sizeof(live.text), digits, dpPos, indicators);
     }
+    if (live.valid)
+    {
+        lastValid = live;
+        haveLastValid = true;
+    }
+    else if (haveLastValid)
+    {
+        live = lastValid;
+        snprintf(live.text, sizeof(live.text), "%s", UI_PLACEHOLDER); // no live value, the function's log stays
+    }
     graphSetLive(&live);
+}
+
+// v22: see uiRequestHome()
+static volatile bool uiHomeRequested = false;
+
+void uiRequestHome()
+{
+    uiHomeRequested = true;
+    displayWakeUi();
 }
 
 bool uiPoll()
 {
     bool changed = false;
     bool forceRefresh = false;
+
+    if (uiHomeRequested)
+    {
+        uiHomeRequested = false;
+        if (uiScreen != UI_SCREEN_LCD)
+        {
+            debugLogf("UI: back to the main display (DMM off / going to sleep)");
+            uiSetScreen(UI_SCREEN_LCD);
+            changed = true;
+        }
+    }
 
     // Release events are not used (REL's short press is recognised by the
     // button no longer being held, see below); they are drained so a stale

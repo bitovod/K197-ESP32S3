@@ -42,9 +42,14 @@
 // ------------
 //   AUTO  from the lowest to the highest value in the window (at least 4
 //         counts of the last displayed digit high), grid on 1-2-5 values
+//   ROBUST (v21) like AUTO, but the highest and the lowest
+//         CONFIG_GRAPH_ROBUST_PERCENT % of the columns are left out of the
+//         range (a single spike does not set the scale); they are clipped and
+//         marked by a dot on the edge like in SUPP. With fewer than
+//         CONFIG_GRAPH_ROBUST_MIN_COLUMNS columns it is plain AUTO.
 //   ZERO  the axis always includes zero, both ends on grid values
 //   SUPP  suppressed zero: a fixed centre +- a fixed span (counts of the
-//         last displayed digit, 1-2-5 steps from +-10 to +-10000), plus a
+//         last displayed digit, 1-2-5 steps from +-1 to +-10000), plus a
 //         reserve of CONFIG_GRAPH_SUPP_MARGIN_PERCENT on each side. The
 //         centre is the newest value at the moment SUPP was chosen (RCL
 //         click on the graph, or the settings screen); values outside are clipped and
@@ -67,14 +72,16 @@
 #define GRAPH_YMODE_AUTO  0
 #define GRAPH_YMODE_ZERO  1
 #define GRAPH_YMODE_SUPP  2
-#define GRAPH_YMODE_COUNT 3
+#define GRAPH_YMODE_ROBUST 3 // v21, appended (stored settings keep their meaning); shown after AUTO
+#define GRAPH_YMODE_COUNT 4
 
 #define GRAPH_TRACE_BOTH     0 // MIN/MAX band + average
 #define GRAPH_TRACE_AVG      1
 #define GRAPH_TRACE_ENVELOPE 2
 #define GRAPH_TRACE_COUNT    3
 
-#define GRAPH_SPAN_COUNT 10 // +-10 ... +-10000 counts
+#define GRAPH_SPAN_COUNT 13 // +-1 ... +-10000 counts
+// (v21: +-1, +-2, +-5 added in front - GRAPH_SPANS_ADDED_V21 in settings.h)
 
 // Lines of the settings screen that can be changed (the cursor rows).
 #define GRAPH_SETUP_ROW_INTERVAL 0

@@ -7,6 +7,7 @@
 #include "rtc.h"
 #include "settings.h"
 #include "debuglog.h"
+#include <algorithm> // v21: std::nth_element (ROBUST axis)
 #include "help_text.h" // v15: HELP_LANG_* (the settings screen in the language of SYSTem:LANGuage)
 
 // ---- constant tables ----
@@ -14,8 +15,14 @@
 static const uint32_t graphIntervalSeconds[GRAPH_INTERVAL_COUNT] = {10, 30, 60, 300, 900, 3600, 21600, 86400, 0};
 static const char *const graphIntervalLabels[GRAPH_INTERVAL_COUNT] = {"10 SEC", "30 SEC", "1 MIN", "5 MIN", "15 MIN", "1 HOUR",
                                                                      "6 HRS", "24 HRS", "FULL"};
-static const uint16_t graphSpanCounts[GRAPH_SPAN_COUNT] = {10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
-static const char *const graphYModeNames[GRAPH_YMODE_COUNT] = {"AUTO", "ZERO", "SUPP"};
+// v21: +-1, +-2 and +-5 counts added in front (see GRAPH_SPANS_ADDED_V21 in settings.h)
+static const uint16_t graphSpanCounts[GRAPH_SPAN_COUNT] = {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
+static const char *const graphYModeNames[GRAPH_YMODE_COUNT] = {"AUTO", "ZERO", "SUPP", "ROBUST"};
+// v21: order of the modes on the RCL click and on the settings screen (ROBUST is stored as 3, shown after AUTO)
+static const uint8_t graphYModeOrder[GRAPH_YMODE_COUNT] = {GRAPH_YMODE_AUTO, GRAPH_YMODE_ROBUST, GRAPH_YMODE_ZERO, GRAPH_YMODE_SUPP};
+// v21: the column extremes for the ROBUST axis (float: 2 x 1.5 kB, the precision of the log values)
+static float graphRobustHigh[FB_GRAPH_COLUMNS];
+static float graphRobustLow[FB_GRAPH_COLUMNS];
 
 // FULL: the window is the smallest of these (seconds) that holds 1.1 x the
 // time the log covers - the last one if even that is not enough.
@@ -731,6 +738,7 @@ static void graphBuildScene(bool haveTime, double nowCs)
     double low = 0;
     double high = 0;
     double newest = 0;
+    uint16_t robustCount = 0;
     for (uint16_t i = 0; i < FB_GRAPH_COLUMNS; i++)
     {
         const GraphColumn &c = graphCols[i];
@@ -751,6 +759,18 @@ static void graphBuildScene(bool haveTime, double nowCs)
         }
         newest = avg;
         any = true;
+        graphRobustHigh[robustCount] = (float)hi;
+        graphRobustLow[robustCount] = (float)lo;
+        robustCount++;
+    }
+    if (graphYMode == GRAPH_YMODE_ROBUST && robustCount >= CONFIG_GRAPH_ROBUST_MIN_COLUMNS)
+    {
+        // v21: leave out the CONFIG_GRAPH_ROBUST_PERCENT % highest maxima and lowest minima
+        uint16_t skip = (uint16_t)((uint32_t)robustCount * CONFIG_GRAPH_ROBUST_PERCENT / 100);
+        std::nth_element(graphRobustHigh, graphRobustHigh + (robustCount - 1 - skip), graphRobustHigh + robustCount);
+        std::nth_element(graphRobustLow, graphRobustLow + skip, graphRobustLow + robustCount);
+        high = graphRobustHigh[robustCount - 1 - skip];
+        low = graphRobustLow[skip];
     }
     for (uint16_t i = 0; i < FB_GRAPH_COLUMNS; i++)
     {
@@ -814,8 +834,9 @@ static void graphBuildScene(bool haveTime, double nowCs)
         low = floor(low / step + 1e-9) * step;
         high = ceil(high / step - 1e-9) * step;
     }
-    else
+    else if (graphYMode == GRAPH_YMODE_AUTO || graphYMode == GRAPH_YMODE_ROBUST)
     {
+        // (v21: not in SUPP - its span is chosen by the user, down to +-1 count)
         if (high - low < minSpan)
         {
             double mid = (low + high) / 2.0;
@@ -1029,7 +1050,17 @@ void graphSetupStep(uint8_t row, int8_t delta)
             break;
         }
         case GRAPH_SETUP_ROW_YMODE:
-            graphSetYMode((uint8_t)(((int)graphYMode + delta + GRAPH_YMODE_COUNT) % GRAPH_YMODE_COUNT));
+        {
+            int pos = 0;
+            for (int k = 0; k < GRAPH_YMODE_COUNT; k++)
+            {
+                if (graphYModeOrder[k] == graphYMode)
+                {
+                    pos = k;
+                }
+            }
+            graphSetYMode(graphYModeOrder[(pos + delta + GRAPH_YMODE_COUNT) % GRAPH_YMODE_COUNT]);
+        }
             break;
         case GRAPH_SETUP_ROW_TRACE:
             graphSetTrace((uint8_t)(((int)graphTrace + delta + GRAPH_TRACE_COUNT) % GRAPH_TRACE_COUNT));
@@ -1056,13 +1087,13 @@ void graphSetupStep(uint8_t row, int8_t delta)
 #define GRAPH_WORD_KEYS      5
 #define GRAPH_WORD_FULL      6
 #define GRAPH_WORD_YMODE0    7 // GRAPH_WORD_YMODE0 + GRAPH_YMODE_*
-#define GRAPH_WORD_DIGITS    10
-#define GRAPH_WORD_COUNT     11
+#define GRAPH_WORD_DIGITS    11 // (v21: after the 4th Y mode)
+#define GRAPH_WORD_COUNT     12
 static const char *const graphSetupWords[HELP_LANG_COUNT][GRAPH_WORD_COUNT] = {
     {"GRAF - NASTAVENI", "INTERVAL", "OSA Y", "STOPA", "ROZPETI Y", "REL/dB: zmena  RCL: dalsi  STO: zpet",
-     "FULL (CELY LOG)", "AUTO (MIN..MAX)", "ZERO (S NULOU)", "SUPP (POTL. NULA)", "DIG."},
+     "FULL (CELY LOG)", "AUTO (MIN..MAX)", "ZERO (S NULOU)", "SUPP (POTL. NULA)", "ROBUST", "DIG."},
     {"GRAPH SETTINGS", "INTERVAL", "Y AXIS", "TRACE", "Y SPAN", "REL/dB: change  RCL: next  STO: back",
-     "FULL (WHOLE LOG)", "AUTO (MIN..MAX)", "ZERO (WITH 0)", "SUPP (SUPPR. ZERO)", "DIG."},
+     "FULL (WHOLE LOG)", "AUTO (MIN..MAX)", "ZERO (WITH 0)", "SUPP (SUPPR. ZERO)", "ROBUST", "DIG."},
 };
 
 static const char *graphWord(uint8_t word)

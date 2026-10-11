@@ -61,18 +61,22 @@ Markers are small triangles at the top edge. An OL reading is a mark at the top 
 |---|---|
 | REL / dB click | shorter / longer interval (at the release) |
 | REL + dB | marker on the reading shown |
-| RCL click | next Y axis mode: AUTO → ZERO → SUPP → AUTO |
+| RCL click | next Y axis mode: AUTO → ROBUST → ZERO → SUPP → AUTO |
 | RCL hold | graph settings |
 | REL hold | help |
 | STO | back to the main display |
 
 Intervals: 10 SEC, 30 SEC, 1 MIN, 5 MIN, 15 MIN, 1 HOUR, 6 HRS, 24 HRS, FULL (the whole log).
-Y axis: **AUTO** = from the lowest to the highest value, **ZERO** = the axis always includes zero, **SUPP**
-(suppressed zero) = a fixed centre (the newest value at the moment SUPP is chosen) ± a chosen span, plus a 10 %
-reserve on each side.
+Y axis: **AUTO** = from the lowest to the highest value; **ROBUST** = like AUTO, but the highest 2 % and the
+lowest 2 % of the columns do not count for the range, so one short spike does not set the scale (it is clipped and
+marked by a dot on the edge; below 20 columns with data it is plain AUTO); **ZERO** = the axis always includes
+zero; **SUPP** (suppressed zero) = a fixed centre (the newest value at the moment SUPP is chosen) ± a chosen span,
+plus a 10 % reserve on each side. Values outside the axis are clipped and marked by a dot on the edge.
+
+![ROBUST: one spike, the noise band still fills the screen](images/graph_robust.png)
 
 **Graph settings:** INTERVAL, Y AXIS, TRACE (band + average, average only, band only), Y SPAN (the SUPP span,
-±10 … ±10000 counts of the last digit).
+±1 … ±10000 counts of the last digit).
 
 ![Graph settings](images/graph_setup_en.png)
 
@@ -178,9 +182,37 @@ graph, the alarm defaults and SCPI (`LOG:*`).
 **Changing the function.** The statistics and the graph always show only the function being measured (DCV, ACV,
 DCI, ACI, OHM, dB). After a switch the graph is rebuilt with the new function: the time spent on the other one
 stays a gap, and switching back shows the earlier readings again. A change of range within one function (mV ↔ V)
-changes nothing. The first **7 readings (about 2 s) after a change of the function** (and after power-up) are still
-settling. They are logged with the flag `SETTLE`, but the statistics, the graph and the alarm leave them out
-(`CONFIG_DATALOG_SETTLE_READINGS` in `config.h`).
+changes nothing. The first **7 readings (about 2 s) after a change of the function** are still settling, and the
+first **20 readings (about 6 s) after the K197 was switched on** (or the ESP32 started). They are logged with the
+flag `SETTLE`, but the statistics, the graph and the alarm leave them out (`CONFIG_DATALOG_SETTLE_READINGS`,
+`CONFIG_DATALOG_SETTLE_POWERON_READINGS` in `config.h`).
+
+## When the K197 is switched off
+
+If the ESP32 has its own supply (USB, or a battery added later), the log stays while the K197 is switched off.
+
+![oFF197](images/lcd_off.png)
+
+- **4 s** without a usable frame: the main display shows **`oFF197`** when the K197 sends nothing at all (CS quiet,
+  the K197 is off), or **`Err197`** when something arrives that cannot be used (a fault). With `oFF197` every
+  screen returns to the main display.
+- The graph and the statistics keep the last function, so the log can still be looked at (the live value shows
+  `--.----`). When the K197 comes back, the gap stays visible in the graph and the older readings stay.
+- After **60 s** without a key the ESP32 goes into light sleep. The display keeps its picture (`oFF197`), the log
+  stays in PSRAM.
+- It wakes up when the K197 is switched on, on any key (that press only wakes it; then all screens work for 60 s)
+  and on a start bit on the SCPI UART (the first command is usually lost, send it again). In light sleep the
+  native USB (CDC) does not answer.
+- `SYSTem:DIAGnostic?` shows the number of light sleeps, the time asleep and the last wake-up cause.
+- Settings in `config.h`: `CONFIG_DMM_NO_DATA_MS`, `CONFIG_DMM_OFF_QUIET_MS`, `CONFIG_POWER_*`
+  (`CONFIG_POWER_SLEEP_ENABLE 0` = never sleep).
+
+## RTC accuracy
+
+`SYSTem:TIME:AGINg <-128..127>` trims the rate of the DS3231: one step is about 0.1 ppm (about 8.6 ms a day), a
+**positive value slows the clock down**. A clock gaining 1 s a day needs about +116 more. The value is applied at
+once, kept in the settings and written back into the RTC at boot if the RTC holds another one (e.g. after a
+battery change).
 
 ---
 
@@ -237,17 +269,22 @@ pokrývá 1/384 okna. V záhlaví je funkce a jednotka, interval, režim osy Y (
 |---|---|
 | REL / dB klik | kratší / delší interval (při uvolnění) |
 | REL + dB | marker na zobrazenou hodnotu |
-| RCL klik | další režim osy Y: AUTO → ZERO → SUPP → AUTO |
+| RCL klik | další režim osy Y: AUTO → ROBUST → ZERO → SUPP → AUTO |
 | RCL podržet | nastavení grafu |
 | REL podržet | nápověda |
 | STO | zpět na hlavní displej |
 
 Intervaly: 10 SEC, 30 SEC, 1 MIN, 5 MIN, 15 MIN, 1 HOUR, 6 HRS, 24 HRS, FULL (celý log).
-Osa Y: **AUTO** = od nejnižší po nejvyšší hodnotu, **ZERO** = osa vždy obsahuje nulu, **SUPP** (potlačená nula) =
-pevný střed (nejnovější hodnota v okamžiku volby SUPP) ± zvolené rozpětí a 10% rezerva na každé straně.
+Osa Y: **AUTO** = od nejnižší po nejvyšší hodnotu; **ROBUST** = jako AUTO, ale 2 % nejvyšších a 2 % nejnižších
+sloupců se do rozsahu nepočítá, takže jedna krátká špička nezmění měřítko (ořízne se a na okraji ji označí tečka;
+pod 20 sloupci s daty je to obyčejné AUTO); **ZERO** = osa vždy obsahuje nulu; **SUPP** (potlačená nula) = pevný
+střed (nejnovější hodnota v okamžiku volby SUPP) ± zvolené rozpětí a 10% rezerva na každé straně. Hodnoty mimo osu
+se oříznou a na okraji je označí tečka.
+
+![ROBUST: jedna špička, pás šumu přesto vyplní obrazovku](images/graph_robust.png)
 
 **Nastavení grafu:** INTERVAL, OSA Y, STOPA (pás + průměr, jen průměr, jen pás), ROZPETI Y (rozpětí pro SUPP,
-±10 až ±10000 digitů poslední číslice).
+±1 až ±10000 digitů poslední číslice).
 
 ### Nastavovací obrazovky (graf, DMM, alarm)
 
@@ -346,5 +383,30 @@ vyčíst příkazem `LOG:DATA?` (v plánu je SD karta). Log používá statistik
 **Změna funkce.** Statistika i graf vždy ukazují jen právě měřenou funkci (DCV, ACV, DCI, ACI, OHM, dB). Po
 přepnutí se graf přestaví pro novou funkci: doba měření jiné funkce zůstane jako mezera a po přepnutí zpět jsou
 starší odečty znovu vidět. Změna rozsahu v rámci jedné funkce (mV ↔ V) nic nemění. Prvních **7 odečtů (asi 2 s) po změně
-funkce** (a po zapnutí) se ještě ustalují. Do logu se zapíší s příznakem `SETTLE`, ale statistika, graf i alarm je
-vynechají (`CONFIG_DATALOG_SETTLE_READINGS` v `config.h`).
+funkce** se ještě ustaluje, po **zapnutí K197** (nebo startu ESP32) prvních **20 odečtů (asi 6 s)**. Do logu se
+zapíší s příznakem `SETTLE`, ale statistika, graf i alarm je vynechají (`CONFIG_DATALOG_SETTLE_READINGS`,
+`CONFIG_DATALOG_SETTLE_POWERON_READINGS` v `config.h`).
+
+## Když je K197 vypnutý
+
+Pokud má ESP32 vlastní napájení (USB, později baterii), log při vypnutí K197 zůstane.
+
+![oFF197](images/lcd_off.png)
+
+- **4 s** bez použitelného snímku: hlavní displej ukáže **`oFF197`**, když K197 neposílá vůbec nic (CS v klidu,
+  K197 je vypnutý), nebo **`Err197`**, když chodí něco nepoužitelného (porucha). Při `oFF197` se každá obrazovka
+  vrátí na hlavní displej.
+- Graf a statistika drží poslední funkci, takže se v logu dá dál listovat (živá hodnota ukazuje `--.----`). Po
+  zapnutí K197 zůstane v grafu vidět mezera a starší odečty zůstanou.
+- Po **60 s** bez stisku přejde ESP32 do light sleep. Displej si drží obraz (`oFF197`), log zůstává v PSRAM.
+- Probudí ho zapnutí K197, libovolné tlačítko (ten stisk jen probudí, pak 60 s fungují všechny obrazovky) a start
+  bit na SCPI UART (první příkaz se obvykle ztratí, pošlete ho znovu). V light sleep neodpovídá nativní USB (CDC).
+- `SYSTem:DIAGnostic?` ukazuje počet uspání, celkovou dobu spánku a příčinu posledního probuzení.
+- Nastavení v `config.h`: `CONFIG_DMM_NO_DATA_MS`, `CONFIG_DMM_OFF_QUIET_MS`, `CONFIG_POWER_*`
+  (`CONFIG_POWER_SLEEP_ENABLE 0` = nikdy nespat).
+
+## Přesnost RTC
+
+`SYSTem:TIME:AGINg <-128..127>` dolaďuje chod DS3231: jeden krok je asi 0,1 ppm (asi 8,6 ms za den), **kladná
+hodnota hodiny zpomaluje**. Hodiny, které se předbíhají o 1 s za den, potřebují asi +116 navíc. Hodnota platí
+hned, uloží se do nastavení a při startu se zapíše zpět do RTC, pokud v něm je jiná (např. po výměně baterie).

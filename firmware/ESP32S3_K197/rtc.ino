@@ -4,6 +4,8 @@
 #include "rtc.h"
 #include <Wire.h>
 #include <DS3231Centisecond.h>
+#include "settings.h" // v22: stored aging offset
+#include "debuglog.h"
 
 #define DS3231_I2C_ADDR 0x68
 
@@ -13,6 +15,11 @@
 // touches the DS3231's register map directly.
 #define DS3231_REG_STATUS 0x0F
 #define DS3231_STATUS_OSF_BIT 0x80 // Oscillator Stop Flag
+// v22: aging offset (SYSTem:TIME:AGINg) - also direct register access
+#define DS3231_REG_CONTROL 0x0E
+#define DS3231_CONTROL_CONV_BIT 0x20 // start a temperature conversion (and so apply the aging offset)
+#define DS3231_STATUS_BSY_BIT 0x04   // a conversion is running
+#define DS3231_REG_AGING 0x10
 
 static DS3231Centisecond rtc;
 
@@ -45,6 +52,72 @@ bool rtcHasLostPower()
 
     uint8_t status = Wire.read();
     return (status & DS3231_STATUS_OSF_BIT) != 0;
+}
+
+// v22: one register of the DS3231, read / written directly (like the status register above).
+static bool rtcReadRegister(uint8_t reg, uint8_t *value)
+{
+    Wire.beginTransmission(DS3231_I2C_ADDR);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0)
+        return false;
+    if (Wire.requestFrom(DS3231_I2C_ADDR, 1) != 1)
+        return false;
+    *value = (uint8_t)Wire.read();
+    return true;
+}
+
+static bool rtcWriteRegister(uint8_t reg, uint8_t value)
+{
+    Wire.beginTransmission(DS3231_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write(value);
+    return Wire.endTransmission() == 0;
+}
+
+bool rtcGetAging(int8_t *aging)
+{
+    if (!rtc.isSynced())
+        return false;
+    uint8_t value;
+    if (!rtcReadRegister(DS3231_REG_AGING, &value))
+        return false;
+    *aging = (int8_t)value;
+    return true;
+}
+
+bool rtcSetAging(int8_t aging)
+{
+    if (!rtc.isSynced())
+        return false;
+    if (!rtcWriteRegister(DS3231_REG_AGING, (uint8_t)aging))
+        return false;
+    int8_t check;
+    if (!rtcGetAging(&check) || check != aging)
+        return false;
+    // start a temperature conversion so the new offset applies now (skipped while one is running anyway)
+    uint8_t status;
+    uint8_t control;
+    if (rtcReadRegister(DS3231_REG_STATUS, &status) && (status & DS3231_STATUS_BSY_BIT) == 0 &&
+        rtcReadRegister(DS3231_REG_CONTROL, &control))
+    {
+        rtcWriteRegister(DS3231_REG_CONTROL, (uint8_t)(control | DS3231_CONTROL_CONV_BIT));
+    }
+    return true;
+}
+
+void rtcApplyStoredAging()
+{
+    bool isSet = false;
+    int8_t stored = settingsGetRtcAging(&isSet);
+    int8_t chip;
+    if (!isSet || !rtcGetAging(&chip))
+        return;
+    if (chip != stored)
+    {
+        bool ok = rtcSetAging(stored);
+        debugLogAlways("boot: RTC aging %d -> %d from the settings%s", (int)chip, (int)stored, ok ? "" : " - write FAILED");
+    }
 }
 
 bool rtcGetDateTime(uint16_t *year, uint8_t *month, uint8_t *day,

@@ -41,21 +41,27 @@
 // 0xA7 -> 0xA8 commPort, 0xA8 -> 0xA9 displayYOffset,
 // 0xA9 -> 0xAA statsInterval, 0xAA -> 0xAB debugPort (v13), 0xAB -> 0xAC the
 // graph settings (v14), 0xAC -> 0xAD language (v15), 0xAE -> 0xAF the limit
-// alarm (v17).
+// alarm (v17), 0xAF -> 0xB0 no new field, the graph span index moved (v21),
+// 0xB0 -> 0xB1 the DS3231 aging offset (v22).
 // From 0xAA on a new field is APPENDED and the previous magic is
 // migrated (old fields kept, the new one gets its default) instead of
 // resetting everything - so a firmware update does not lose the
 // already dialed-in YOFFset/COMM/THEMe.
-#define SETTINGS_MAGIC 0xAF
+#define SETTINGS_MAGIC 0xB1
 #define SETTINGS_MAGIC_V9 0xA9  // layout up to and including displayYOffset
 #define SETTINGS_MAGIC_V11 0xAA // layout up to and including statsInterval
 #define SETTINGS_MAGIC_V13 0xAB // layout up to and including debugPort
 #define SETTINGS_MAGIC_V14 0xAC // layout up to and including graphSpan
 #define SETTINGS_MAGIC_V15 0xAD // same layout as 0xAE; graphInterval counted without 10 SEC / 30 SEC
 #define SETTINGS_MAGIC_V16 0xAE // layout up to and including language
+#define SETTINGS_MAGIC_V17 0xAF // same layout as 0xB0; graphSpan counted without +-1/2/5 (v17 ... v20)
+#define SETTINGS_MAGIC_V21 0xB0 // layout up to and including alarmHigh
 // 0xAD -> 0xAE (v15): no new field - the graph got the intervals 10 SEC and 30 SEC IN FRONT of the
 // others, so a stored graphInterval of 0xAC/0xAD is moved up by GRAPH_INTERVALS_ADDED_V15.
 #define GRAPH_INTERVALS_ADDED_V15 2
+// 0xAF -> 0xB0 (v21): no new field - the SUPP spans +-1, +-2 and +-5 counts were added IN FRONT of +-10 ...
+// +-10000, so a stored graphSpan of 0xAC ... 0xAF is moved up by GRAPH_SPANS_ADDED_V21.
+#define GRAPH_SPANS_ADDED_V21 3
 
 // v17: one alarm configuration per measurement function, in the order of
 // alarm.h (DCV, ACV, DCI, ACI, OHM, DB) - static_assert there.
@@ -88,6 +94,9 @@ struct KeithleySettings
     uint8_t alarmSignal;                         // ALARM_SIGNAL_*
     float alarmLow[SETTINGS_ALARM_FUNCTIONS];    // base units (V, A, Ohm, dB), NAN = not set
     float alarmHigh[SETTINGS_ALARM_FUNCTIONS];
+    // ---- appended in 0xB1 (v22, SYSTem:TIME:AGINg - see rtc.h) ----
+    int8_t rtcAging;    // DS3231 aging offset register, written to the chip at boot
+    uint8_t rtcAgingSet; // 0 = never set over SCPI: the chip keeps whatever it holds
 };
 
 // Call once from setup(), before anything else here is used, and
@@ -190,6 +199,12 @@ void settingsSetLanguage(uint8_t language);
 void settingsSetThemeDeferred(uint8_t theme);
 void settingsSetBeepEnabledDeferred(bool enabled);
 void settingsSetLanguageDeferred(uint8_t language);
+
+// v22: DS3231 aging offset (SYSTem:TIME:AGINg). *isSet = false while it was
+// never set over SCPI (then the chip's own register is left alone at boot).
+// The setter saves at once (SCPI only, no front-panel path).
+int8_t settingsGetRtcAging(bool *isSet);
+void settingsSetRtcAging(int8_t aging);
 
 // v17: the limit alarm (alarm.ino) - per function the remembered mode
 // (UPPER/LOWER/BOTH; whether the alarm is ON is not persisted, it is always

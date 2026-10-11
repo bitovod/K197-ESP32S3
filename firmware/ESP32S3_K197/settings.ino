@@ -105,7 +105,8 @@ void settingsBegin()
     // Forces the first settingsSave() below to really write.
     memset(&settingsCommitted, 0xFF, sizeof(settingsCommitted));
     if (settings.magic == SETTINGS_MAGIC_V9 || settings.magic == SETTINGS_MAGIC_V11 || settings.magic == SETTINGS_MAGIC_V13 ||
-        settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15 || settings.magic == SETTINGS_MAGIC_V16)
+        settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15 || settings.magic == SETTINGS_MAGIC_V16 ||
+        settings.magic == SETTINGS_MAGIC_V17 || settings.magic == SETTINGS_MAGIC_V21)
     {
         // Firmware update: keep everything, give the fields added since
         // their defaults (each step adds what its layout lacked).
@@ -117,24 +118,33 @@ void settingsBegin()
         {
             settings.debugPort = CONFIG_DEFAULT_DEBUG_PORT;
         }
-        if (settings.magic == SETTINGS_MAGIC_V16)
-        {
-            // already the v15 numbering of the graph intervals
-        }
-        else if (settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15)
+        bool hasGraph = settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15 ||
+                        settings.magic == SETTINGS_MAGIC_V16 || settings.magic == SETTINGS_MAGIC_V17;
+        if (settings.magic == SETTINGS_MAGIC_V14 || settings.magic == SETTINGS_MAGIC_V15)
         {
             // same interval as before, under its new index (10 SEC and 30 SEC were added in front)
             settings.graphInterval = (uint8_t)(settings.graphInterval + GRAPH_INTERVALS_ADDED_V15);
         }
-        else
+        if (hasGraph)
+        {
+            // v21: same SUPP span as before, under its new index (+-1, +-2, +-5 were added in front)
+            settings.graphSpan = (uint8_t)(settings.graphSpan + GRAPH_SPANS_ADDED_V21);
+        }
+        else if (settings.magic != SETTINGS_MAGIC_V21)
         {
             settingsGraphDefaults();
         }
-        if (settings.magic != SETTINGS_MAGIC_V15 && settings.magic != SETTINGS_MAGIC_V16)
+        if (settings.magic != SETTINGS_MAGIC_V15 && settings.magic != SETTINGS_MAGIC_V16 && settings.magic != SETTINGS_MAGIC_V17 &&
+            settings.magic != SETTINGS_MAGIC_V21)
         {
             settings.language = CONFIG_DEFAULT_LANGUAGE;
         }
-        settingsAlarmDefaults(); // v17: every older layout lacks the alarm
+        if (settings.magic != SETTINGS_MAGIC_V17 && settings.magic != SETTINGS_MAGIC_V21)
+        {
+            settingsAlarmDefaults(); // v17: every older layout lacks the alarm
+        }
+        settings.rtcAging = 0; // v22: every older layout lacks it - the chip keeps its own value
+        settings.rtcAgingSet = 0;
         settings.magic = SETTINGS_MAGIC;
         settingsSave();
     }
@@ -158,6 +168,8 @@ void settingsBegin()
         settingsGraphDefaults();
         settings.language = CONFIG_DEFAULT_LANGUAGE;
         settingsAlarmDefaults();
+        settings.rtcAging = 0;
+        settings.rtcAgingSet = 0;
         settingsSave();
     }
     else
@@ -352,6 +364,24 @@ void settingsSetGraphDeferred(uint8_t interval, uint8_t yMode, uint8_t trace, ui
 uint8_t settingsGetLanguage()
 {
     return settings.language;
+}
+
+int8_t settingsGetRtcAging(bool *isSet)
+{
+    if (isSet)
+    {
+        *isSet = settings.rtcAgingSet != 0;
+    }
+    return settings.rtcAging;
+}
+
+void settingsSetRtcAging(int8_t aging)
+{
+    portENTER_CRITICAL(&settingsMux);
+    settings.rtcAging = aging;
+    settings.rtcAgingSet = 1;
+    portEXIT_CRITICAL(&settingsMux);
+    settingsSave();
 }
 
 void settingsSetLanguage(uint8_t language)

@@ -164,11 +164,17 @@ void displayWakeUi()
     displayNotify(DISP_NOTIFY_UI);
 }
 
+// v22 (power.ino, light sleep): rendering paused, a render or a blit under way / about to start.
+static volatile bool dispPaused = false;
+static volatile bool dispRenderBusy = false;
+static volatile bool dispBlitPending = false;
+
 static void displayWakeBlit()
 {
     TaskHandle_t h = dispBlitTaskHandle;
     if (h != NULL)
     {
+        dispBlitPending = true; // cleared when the blit task claims the frame
         xTaskNotifyGive(h);
     }
 }
@@ -356,7 +362,13 @@ static void displayRenderTaskEntry(void *pvParameters)
         bool uiChanged = uiPoll();
         if ((bits & DISP_NOTIFY_RENDER) || uiChanged)
         {
-            displayRenderOnce(true);
+            // v22: busy BEFORE the pause check, so displayIsIdle() can never miss a render that is starting
+            dispRenderBusy = true;
+            if (!dispPaused)
+            {
+                displayRenderOnce(true);
+            }
+            dispRenderBusy = false;
         }
 
         // How long one pass of this loop kept the task busy - the longest one is what could delay the UI.
@@ -403,6 +415,7 @@ static void displayBlitFront()
     portENTER_CRITICAL(&dispFrameMux);
     idx = dispFrontIdx;
     dispReadingIdx = (int8_t)idx;
+    dispBlitPending = false;
     portEXIT_CRITICAL(&dispFrameMux);
 
     const FbSlot &slot = dispSlots[idx];
@@ -472,6 +485,24 @@ static void displayBlitTaskEntry(void *pvParameters)
 }
 
 // ---- public API (declared in display.h) ----
+
+void displaySetPaused(bool paused)
+{
+    dispPaused = paused;
+    if (!paused)
+    {
+        displayNotify(DISP_NOTIFY_RENDER); // whatever changed meanwhile
+    }
+}
+
+bool displayIsIdle()
+{
+    bool reading;
+    portENTER_CRITICAL(&dispFrameMux);
+    reading = dispReadingIdx >= 0;
+    portEXIT_CRITICAL(&dispFrameMux);
+    return !dispRenderBusy && !dispBlitPending && !reading;
+}
 
 void displayBegin()
 {

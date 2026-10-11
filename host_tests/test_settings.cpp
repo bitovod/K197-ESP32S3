@@ -190,7 +190,7 @@ int main()
         EEPROM.commit();
         settingsBegin();
         CHECK(settingsGetGraphInterval() == 4 + GRAPH_INTERVALS_ADDED_V15 && settingsGetGraphYMode() == 2 && settingsGetGraphTrace() == 1 &&
-              settingsGetGraphSpan() == 6, "0xAC migration keeps the graph settings (interval index moved past 10/30 SEC)");
+              settingsGetGraphSpan() == 6 + GRAPH_SPANS_ADDED_V21, "0xAC migration keeps the graph settings (interval and span index moved)");
         CHECK(settingsGetLanguage() == CONFIG_DEFAULT_LANGUAGE && settingsGetDisplayYOffset() == 22, "0xAC migration: language default, old fields kept");
         int commits = EEPROM.commits;
         settingsSetLanguage(1);
@@ -271,6 +271,66 @@ int main()
         settingsGetAlarm(9, &mode, &low, &high);
         CHECK(mode == 0 && isnan(low), "function out of range");
         printf("settings 0xAF: alarm migration and persistence, struct %u bytes\n", (unsigned)sizeof(KeithleySettings));
+    }
+
+    // ---- v21: 0xAF -> 0xB0: same layout, the SUPP span index moves past the new +-1/2/5, the alarm is kept ----
+    EEPROM.reset();
+    {
+        KeithleySettings v17;
+        memset(&v17, 0, sizeof(v17));
+        v17.magic = SETTINGS_MAGIC_V17;
+        v17.theme = 3;
+        v17.graphInterval = 7;
+        v17.graphSpan = 0; // +-10 in the 0xAF numbering
+        v17.language = 1;
+        v17.alarmMode[2] = 1;
+        v17.alarmLow[2] = 0.25f;
+        v17.alarmHigh[2] = NAN;
+        v17.alarmSignal = 1;
+        EEPROM.put(0, v17);
+        EEPROM.commit();
+        settingsBegin();
+        CHECK(settingsGetGraphSpan() == GRAPH_SPANS_ADDED_V21 && settingsGetGraphInterval() == 7, "0xAF migration: +-10 stays +-10 (index 0 -> 3), interval not moved");
+        uint8_t mode; float low, high;
+        settingsGetAlarm(2, &mode, &low, &high);
+        CHECK(mode == 1 && low == 0.25f && isnan(high) && settingsGetAlarmSignal() == 1 && settingsGetLanguage() == 1 && settingsGetTheme() == 3,
+              "0xAF migration keeps the alarm, language and theme");
+        settingsBegin();
+        CHECK(settingsGetGraphSpan() == GRAPH_SPANS_ADDED_V21, "span migrated once, not again");
+    }
+
+    // ---- v22: 0xB0 -> 0xB1: everything kept, the RTC aging offset not set (the chip keeps its own) ----
+    EEPROM.reset();
+    {
+        KeithleySettings v21;
+        memset(&v21, 0xFF, sizeof(v21));
+        memset(&v21, 0, offsetof(KeithleySettings, rtcAging));
+        v21.magic = SETTINGS_MAGIC_V21;
+        v21.theme = 6;
+        v21.graphSpan = 2; // +-5, already the v21 numbering
+        v21.language = 1;
+        v21.alarmMode[0] = 2;
+        v21.alarmLow[0] = 1.5f;
+        v21.alarmHigh[0] = NAN;
+        EEPROM.put(0, v21);
+        EEPROM.commit();
+        settingsBegin();
+        bool isSet = true;
+        int8_t aging = settingsGetRtcAging(&isSet);
+        CHECK(!isSet && aging == 0, "0xB0 migration: aging not set");
+        uint8_t mode; float low, high;
+        settingsGetAlarm(0, &mode, &low, &high);
+        CHECK(settingsGetTheme() == 6 && settingsGetGraphSpan() == 2 && settingsGetLanguage() == 1 && mode == 2 && low == 1.5f,
+              "0xB0 migration keeps everything (span NOT moved again)");
+        int commits = EEPROM.commits;
+        settingsSetRtcAging(-37);
+        CHECK(EEPROM.commits == commits + 1, "aging saved at once");
+        settingsBegin();
+        aging = settingsGetRtcAging(&isSet);
+        CHECK(isSet && aging == -37, "aging persists");
+        settingsSetRtcAging(127);
+        settingsBegin();
+        CHECK(settingsGetRtcAging(NULL) == 127, "aging +127");
     }
 
     // ---- unknown magic -> defaults ----

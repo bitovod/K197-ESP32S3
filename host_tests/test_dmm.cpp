@@ -38,6 +38,10 @@ void serialOutUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPo
 void datalogUpdateReading(const char *, int8_t, uint16_t, uint8_t) {}
 void uiUpdateLiveReading(const char *, int8_t dpPos, uint16_t, uint8_t) { gLiveDp = dpPos; }
 void alarmUpdateReading(const char *, int8_t, uint16_t, uint8_t) {} // v17
+static int gHomeRequests = 0;
+void uiRequestHome() { gHomeRequests++; } // v22
+static int gDmmOffNotes = 0;
+void datalogNoteDmmOff() { gDmmOffNotes++; } // v22
 static std::vector<std::string> gLog;
 void debugLogAlways(const char *format, ...) { char b[200]; va_list a; va_start(a, format); vsnprintf(b, sizeof(b), format, a); va_end(a); gLog.push_back(b); }
 void debugLogf(const char *, ...) {}
@@ -80,6 +84,10 @@ static void resetAll(uint32_t dmmStartDelayMs)
     gLog.clear();
     dmmNoDataShown = false;
     dmmRestartCount = 0;
+    dmmCsEdges = 0; // v22: the delivered frames count as CS edges now
+    dmmLastCsEdgeMs = 0;
+    dmmOff = false;
+    gpioLevel[DMM_CS_PIN] = LOW;
     dmmBusInit(DMM_SCK_PIN, DMM_MOSI_PIN, DMM_CS_PIN);
     s.dmmOn = true;
     s.nextFrameMs = fakeNow() + dmmStartDelayMs;
@@ -115,29 +123,51 @@ int main()
         CHECK(!dmmNoDataShown, "no Err197 while data flows");
         CHECK(fakeSpi().pending.size() <= 1, "never more than one transaction in the driver");
     }
-    // 3. watchdog: no DMM at all -> Err197 after CONFIG_DMM_NO_DATA_MS, SPI slave restarted every period; data -> normal again
+    // 3. watchdog: no DMM at all (switched off: no CS edge, CS low) -> oFF197 after CONFIG_DMM_NO_DATA_MS (v22),
+    //    SPI slave restarted every period; CS edges without frames -> Err197; data -> normal again
     {
         resetAll(0);
         fakeSpi().dmmOn = false;
+        fakeGpioEdges(DMM_CS_PIN, 0); // (armed)
         uint32_t t0 = fakeNow();
-        while (!dmmNoDataShown && fakeNow() - t0 < 60000) { int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n); dmmCheckNoData(); }
+        bool powerDownEdge = false;
+        while (!dmmNoDataShown && fakeNow() - t0 < 60000)
+        {
+            int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n);
+            if (!powerDownEdge) { fakeGpioEdges(DMM_CS_PIN, 9); powerDownEdge = true; } // v22: switching off = a few broken frames
+            dmmCheckNoData();
+        }
         uint32_t after = fakeNow() - t0;
-        printf("3. no DMM: Err197 after %u ms\n", after);
-        CHECK(dmmNoDataShown && after >= CONFIG_DMM_NO_DATA_MS && after <= CONFIG_DMM_NO_DATA_MS + 500, "Err197 after the no-data time");
-        const uint8_t err[6] = {0x2F, 0x22, 0x22, 0x50, 0x5B, 0x51};
-        CHECK(memcmp(gSeg, err, 6) == 0 && gDp == -1 && gInd == 0 && gUnit == KEITHLEY_UNIT_NONE, "display shows Err197, nothing else");
+        printf("3. no DMM: oFF197 after %u ms\n", after);
+        CHECK(dmmNoDataShown && after >= CONFIG_DMM_NO_DATA_MS && after <= CONFIG_DMM_NO_DATA_MS + 500, "oFF197 after the no-data time");
+        const uint8_t off[6] = {0x66, 0x2B, 0x2B, 0x50, 0x5B, 0x51};
+        CHECK(memcmp(gSeg, off, 6) == 0 && gDp == -1 && gInd == 0 && gUnit == KEITHLEY_UNIT_NONE && dmmIsOff(), "display shows oFF197, nothing else");
+        CHECK(gHomeRequests > 0 && gDmmOffNotes > 0, "oFF197: the UI is sent back to the main display, the log told (long settling next)");
         CHECK(gLiveDp == -1, "statistics live value set to 'not a reading'");
         CHECK(dmmRestartCount == 1 && fakeSpi().inits == 2, "SPI slave restarted once");
         bool reported = false;
-        for (auto &m : gLog) if (m.find("CS falling edges 0, SCK edges 0") != std::string::npos) reported = true;
-        CHECK(reported, "edge report: nothing on CS/SCK while the DMM is silent");
+        for (auto &m : gLog) if (m.find("CS falling edges 9, SCK edges 0") != std::string::npos) reported = true;
+        CHECK(reported, "edge report: only the power-down edges on CS while the DMM is silent");
         gLog.clear();
-        fakeGpioEdges(DMM_CS_PIN, 7);    // a K197 that sends something the capture does not turn into frames
         fakeGpioEdges(DMM_SCK_PIN, 500);
-        for (int i = 0; i < 120; i++) { int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n); dmmCheckNoData(); } // 24 s more
+        // a K197 that sends something the capture does not turn into frames: a CS edge every 200 ms for 12 s
+        for (int i = 0; i < 120; i++)
+        {
+            int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n);
+            if (i < 60) fakeGpioEdges(DMM_CS_PIN, 1);
+            dmmCheckNoData();
+        } // 24 s more
         bool edgesSeen = false;
-        for (auto &m : gLog) if (m.find("CS falling edges 7, SCK edges 500,") != std::string::npos) edgesSeen = true;
+        for (auto &m : gLog) if (m.find("SCK edges 500,") != std::string::npos && m.find("CS falling edges 0,") == std::string::npos) edgesSeen = true;
         CHECK(edgesSeen, "edge report counts CS and SCK edges of the silent period");
+        bool errShown = false, offAgain = false;
+        for (auto &m : gLog)
+        {
+            if (m.find("now showing Err197") != std::string::npos) errShown = true;
+            if (errShown && m.find("now showing oFF197") != std::string::npos) offAgain = true;
+        }
+        CHECK(errShown, "CS edges without frames: Err197 for that period (not off)");
+        CHECK(offAgain && memcmp(gSeg, off, 6) == 0 && dmmIsOff(), "quiet again in the next period: oFF197");
         fakeGpioEdges(DMM_SCK_PIN, DMM_SCK_COUNT_CAP + 50);
         CHECK(!fakeGpioIntr(DMM_SCK_PIN).enabled && dmmSckCapped, "SCK counter switches itself off at the cap");
         printf("   restarts after %u ms of silence: %u\n", fakeNow() - t0, (unsigned)dmmRestartCount);
@@ -146,11 +176,28 @@ int main()
         s.dmmOn = true;
         s.nextFrameMs = fakeNow() + 100;
         for (int i = 0; i < 20; i++) { int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n); dmmCheckNoData(); }
-        CHECK(!dmmNoDataShown && gGoodFrames > 0 && gDp == 1, "data again: the reading replaces Err197");
+        CHECK(!dmmNoDataShown && gGoodFrames > 0 && gDp == 1 && !dmmIsOff(), "data again: the reading replaces oFF197");
         CHECK(!fakeGpioIntr(DMM_SCK_PIN).enabled && fakeGpioIntr(DMM_CS_PIN).enabled, "frames flow: SCK counting off, CS counting on");
         unsigned restarts = (unsigned)dmmRestartCount;
         for (int i = 0; i < 200; i++) { int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n); dmmCheckNoData(); }
         CHECK(dmmRestartCount == restarts, "no restarts while data flows");
+    }
+    // 3b. v22: no edges but CS stuck HIGH (a K197 with power but a stopped CPU) -> Err197, not off
+    {
+        resetAll(0);
+        fakeSpi().dmmOn = false;
+        gpioLevel[DMM_CS_PIN] = HIGH;
+        uint32_t t0 = fakeNow();
+        while (!dmmNoDataShown && fakeNow() - t0 < 60000) { int n = dmmCaptureFrame(); if (n > 0) dmmApplyFrame(n); dmmCheckNoData(); }
+        const uint8_t err[6] = {0x2F, 0x22, 0x22, 0x50, 0x5B, 0x51};
+        CHECK(memcmp(gSeg, err, 6) == 0 && !dmmIsOff(), "CS high without edges: Err197");
+        // light sleep wake-up: the restart request is served on the next pass
+        unsigned restarts = (unsigned)dmmRestartCount;
+        dmmRequestBusRestart();
+        dmmCheckNoData();
+        CHECK(dmmRestartCount == restarts + 1, "dmmRequestBusRestart(): restarted on the next pass");
+        gpioLevel[DMM_CS_PIN] = LOW;
+        printf("3b. CS high without edges: Err197; restart on request\n");
     }
     // 4. frames of valid length but all-zero payload (a capture gone wrong) do not count as data: Err197 + restarts
     {

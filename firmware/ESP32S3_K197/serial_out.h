@@ -62,6 +62,10 @@ void serialOutUpdateReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPo
 // Cheap to call when there's nothing waiting.
 void serialOutProcess();
 
+// v22: millis() of the last byte received on the SCPI port (0 = none yet) -
+// power.ino stays awake for a while after SCPI traffic.
+uint32_t serialOutLastRxMs();
+
 // True if SYSTem:DEBUG is ON *and* nothing is currently sitting
 // half-typed in the SCPI line buffer (same reasoning as
 // serialOutProcess()'s own auto-send guard - a debug trace line

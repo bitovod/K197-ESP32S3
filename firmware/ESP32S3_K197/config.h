@@ -42,7 +42,30 @@
 // v13: no valid DMM frame for this long (milliseconds; the K197 sends
 // about 3.5 per second) -> the LCD replica shows "Err197" and the SPI
 // slave is restarted, again after every further such period of silence.
-#define CONFIG_DMM_NO_DATA_MS 10000
+#define CONFIG_DMM_NO_DATA_MS 4000 // v22: 4 s (was 10 s)
+// v22: if CS is low and has had no edge for CONFIG_DMM_OFF_QUIET_MS (the
+// divider holds it low while the K197 is unpowered), it shows "oFF197"
+// instead and the ESP32 may go to light sleep (power.h). Quiet time rather
+// than "no edge in the whole period": while its supply decays the K197 still
+// sends a few broken frames, and an SPI slave restart puts a glitch on CS.
+#define CONFIG_DMM_OFF_QUIET_MS 2000 // v22: 2 s, must stay below CONFIG_DMM_NO_DATA_MS
+
+// v22: light sleep while the K197 is switched off (power.h). 0 = never sleep.
+#define CONFIG_POWER_SLEEP_ENABLE 1
+// stay awake this long after a key, SCPI traffic or a key/UART wake-up (ms)
+#define CONFIG_POWER_KEY_AWAKE_MS 60000
+// ... and this long after a DMM / unknown wake-up, before sleeping again (ms)
+#define CONFIG_POWER_MIN_AWAKE_MS 3000
+// a timer wake-up every this many seconds as a safety net (0 = none), awake for (ms)
+#define CONFIG_POWER_TIMER_WAKE_S   300
+#define CONFIG_POWER_TIMER_AWAKE_MS 200
+// 1 = a start bit on the SCPI UART RX wakes up (the first command is usually lost)
+#define CONFIG_POWER_WAKE_ON_UART 1
+// how often powerPoll() looks (ms), how long it waits for the display to finish
+// a frame before sleeping (ms), and at most how long a waking key may stay held (ms)
+#define CONFIG_POWER_CHECK_MS            100
+#define CONFIG_POWER_IDLE_WAIT_MS        300
+#define CONFIG_POWER_KEY_RELEASE_WAIT_MS 5000
 
 // EXPERIMENT (v13): 1 = switch the ESP32's brownout detector off at the
 // very start of setup(). It only covers what comes AFTER the start of
@@ -220,16 +243,16 @@
 // Current use: 26 tokens, 40 commands (MEASure:*, FETCh? added).
 // Headroom is cheap: a few bytes per entry.
 #undef SCPI_MAX_TOKENS
-#define SCPI_MAX_TOKENS 48       // distinct keywords (SYSTem, AUTO, MEASure, ...) - v17: 41 used
+#define SCPI_MAX_TOKENS 48       // distinct keywords (SYSTem, AUTO, MEASure, ...) - v22: 43 used
 #undef SCPI_MAX_COMMANDS
-#define SCPI_MAX_COMMANDS 80     // registered commands (each "X" and "X?" counts) - v17: 69 used
+#define SCPI_MAX_COMMANDS 80     // registered commands (each "X" and "X?" counts) - v22: 67 registered
 #undef SCPI_HASH_TYPE
 #define SCPI_HASH_TYPE uint32_t  // command hash width; the default 8 bits risks two commands sharing a hash at 40+ commands
 
 #define SCPI_IDN_MANUFACTURER "KEITHLEY INSTRUMENTS INC."
 #define SCPI_IDN_MODEL        "MODEL 197"
 #define SCPI_IDN_SERIAL       "000000" // put your instrument's serial number here (reported by *IDN?)
-#define SCPI_IDN_FIRMWARE     "C2v20"
+#define SCPI_IDN_FIRMWARE     "C2v22"
 
 // ---------------------------------------------------------------
 // First-boot defaults
@@ -411,7 +434,7 @@
 // ---------------------------------------------------------------
 // RCL on the LCD screen opens the graph of the logged values of the
 // current measurement function. On the graph: REL click = shorter, dB =
-// longer interval, RCL click = next Y axis mode (AUTO -> ZERO -> SUPP ->
+// longer interval, RCL click = next Y axis mode (AUTO -> ROBUST -> ZERO -> SUPP ->
 // AUTO, SUPP centred on the newest value), RCL held CONFIG_GRAPH_SETUP_HOLD_MS
 // = the graph settings screen, REL held CONFIG_UI_HELP_HOLD_MS = help, STO = back to the LCD. On the
 // settings screen: RCL = next line, REL/dB = change the value, STO = back to
@@ -431,7 +454,7 @@
 #define CONFIG_GRAPH_DEFAULT_INTERVAL_INDEX 5
 #define CONFIG_GRAPH_DEFAULT_YMODE          0
 #define CONFIG_GRAPH_DEFAULT_TRACE          0
-#define CONFIG_GRAPH_DEFAULT_SPAN_INDEX     3
+#define CONFIG_GRAPH_DEFAULT_SPAN_INDEX     6 // +-100 counts (v21: index moved by the new +-1/2/5)
 
 // v15: language of the help screens and the graph settings screen after the
 // first boot: 0 = CZ (Czech without diacritics), 1 = EN (help_text.h).
@@ -505,6 +528,17 @@
 // statistics, the graph, LOG:MIN?/MAX?/AVERage?/MEDian?, the alarm (and its
 // default limits) leave them out. 0 = off.
 #define CONFIG_DATALOG_SETTLE_READINGS 7 // about 2 s - 3 was not enough on the instrument
+// v22: after the K197 was switched on (it was off - "oFF197" - or the ESP32
+// has just started) its readings take much longer to settle (~6-7 s on the
+// graph), so the first this many readings then settle (~3.3 a second).
+#define CONFIG_DATALOG_SETTLE_POWERON_READINGS 20 // about 6 s, enough on the instrument
+
+// v21 TEST: caps the log at this many records (0 = off, the whole free PSRAM
+// as usual). With e.g. 20000 records the ring buffer wraps after ~1 h 45 min
+// at 3.2 readings/s instead of ~52 h, so the wrap-around (statistics, graph
+// FULL, markers, LOG:DATA?) can be tested overnight. The boot report and
+// SYSTem:DIAGnostic? say "TEST LIMIT" while it is on. Set back to 0 for normal use.
+#define CONFIG_DATALOG_TEST_CAPACITY 0
 
 // ---------------------------------------------------------------
 // Markers (marker.h / marker.ino) - new in v18
@@ -529,6 +563,12 @@
 // axis covers +-110 counts). The grid stays on 1-2-5 values. 0 = exactly
 // the span.
 #define CONFIG_GRAPH_SUPP_MARGIN_PERCENT 10
+
+// v21: Y axis mode ROBUST - the share of the columns (each end: the highest
+// maxima, the lowest minima) left out of the axis range, in percent, and the
+// least number of columns with data below which ROBUST is plain AUTO.
+#define CONFIG_GRAPH_ROBUST_PERCENT     2
+#define CONFIG_GRAPH_ROBUST_MIN_COLUMNS 20
 
 // Two columns with values are joined by the average line unless the gap
 // between them is longer than this many seconds (or 2.5 x the

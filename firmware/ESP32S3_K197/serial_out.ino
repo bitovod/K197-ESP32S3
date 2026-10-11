@@ -28,6 +28,7 @@
 //                    hex bytes of every captured frame, then the
 //                    decoded reading - see HandleHelpDetail() below
 //   SYSTem:TIME <YYYY> <MM> <DD> <hh> <mm> <ss> / ?   DS3231 RTC
+//   SYSTem:TIME:AGINg <-128..127> / ?   (v22) DS3231 aging offset (rate trim), also kept in the settings
 //                    date/time (rtc.h/rtc.ino), SPACE-separated (not
 //                    comma) - see HandleSystemTimeSet()'s own comment
 //                    for why, and HandleHelpDetail() below for the
@@ -40,9 +41,9 @@
 //                    of the graph settings screen on the display (not of
 //                    this SCPI help, which stays English)
 //   GRAPh:INTerval <10S|30S|1M|5M|15M|1H|6H|24H|FULL> / ?   (v15) graph window
-//   GRAPh:YAXis <AUTO|ZERO|SUPP> / ?   (v15) graph Y axis mode
+//   GRAPh:YAXis <AUTO|ROBust|ZERO|SUPP> / ?   (v15, ROBust v21) graph Y axis mode
 //   GRAPh:TRACe <BOTH|AVG|BAND> / ?    (v15) what the graph draws
-//   GRAPh:SPAN <10|20|50|...|10000> / ?   (v15) SUPP span, +- counts
+//   GRAPh:SPAN <1|2|5|10|...|10000> / ?   (v15, v21 from 1) SUPP span, +- counts
 //                    All four save at once (the front panel saves them
 //                    deferred); the graph adopts them on its next pass.
 //   SYSTem:DIAGnostic?   (v16) memory, stacks and timings for bring-up:
@@ -104,6 +105,7 @@
 #include "trigger_io.h"
 #include "debuglog.h"
 #include "help_text.h" // v15: helpLanguageNames[] for SYSTem:LANGuage
+#include "power.h"     // v22: SYSTem:DIAGnostic? power line
 #include "graph.h"     // v15: GRAPh:* (interval/span tables, GRAPH_* constants)
 #include "ui.h"        // v16: SYSTem:DIAGnostic? (statistics job timing)
 #include "buttons.h"   // v16: SYSTem:DIAGnostic? (button task handle)
@@ -468,14 +470,15 @@ static void HandleHelp(SCPI_C commands, SCPI_P parameters, Stream &interface)
     interface.println(F("SYSTem:DEBUG <ON|OFF> / ?                         raw+decoded frame trace"));
     interface.println(F("SYSTem:DEBUG:PORT <UART|USB> / ?                  where debug messages go"));
     interface.println(F("SYSTem:TIME <YYYY> <MM> <DD> <hh> <mm> <ss> / ?   DS3231 RTC date/time"));
+    interface.println(F("SYSTem:TIME:AGINg <-128..127> / ?                 RTC rate trim (+1 = ~0.1 ppm slower)"));
     interface.println(F("SYSTem:BEEP <ON|OFF> / ?                          acoustic signalling on/off"));
     interface.println(F("SYSTem:COMM <UART|USB> / ?                        which port SCPI itself uses"));
     interface.println(F("SYSTem:LANGuage <CZ|EN> / ?                       language of the help on the display"));
     interface.println(F("SYSTem:DIAGnostic? / SYSTem:DIAGnostic:CLEar      memory, stacks, timings / zero the maxima"));
     interface.println(F("GRAPh:INTerval <10S|30S|1M|5M|15M|1H|6H|24H|FULL> / ?   graph window"));
-    interface.println(F("GRAPh:YAXis <AUTO|ZERO|SUPP> / ?                  graph Y axis mode"));
+    interface.println(F("GRAPh:YAXis <AUTO|ROBust|ZERO|SUPP> / ?           graph Y axis mode"));
     interface.println(F("GRAPh:TRACe <BOTH|AVG|BAND> / ?                   graph trace: band + average, average, band"));
-    interface.println(F("GRAPh:SPAN <10|20|50|...|10000> / ?               SUPP span, +- counts of the last digit"));
+    interface.println(F("GRAPh:SPAN <1|2|5|10|...|10000> / ?               SUPP span, +- counts of the last digit"));
     interface.println(F("CALCulate:LIMit:UPPer <value> [<function>] / ?    alarm upper limit (base units)"));
     interface.println(F("CALCulate:LIMit:LOWer <value> [<function>] / ?    alarm lower limit (base units)"));
     interface.println(F("CALCulate:LIMit:STATe <OFF|ON|UPPer|LOWer|BOTH> [<function>] / ?   limit alarm"));
@@ -637,6 +640,18 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  EEPROM."));
     interface.println();
 
+    interface.println(F("SYSTem:TIME:AGINg <-128..127>"));
+    interface.println(F("SYSTem:TIME:AGINg?"));
+    interface.println(F("  DS3231 aging offset register: trims the rate of the RTC."));
+    interface.println(F("  One step = about 0.1 ppm (about 8.6 ms a day) at 25 C;"));
+    interface.println(F("  a POSITIVE value SLOWS the clock. A clock gaining 1 s a"));
+    interface.println(F("  day (11.6 ppm) needs about +116 more. Applied at once (a"));
+    interface.println(F("  temperature conversion is started). Also saved in the"));
+    interface.println(F("  settings and written back into the chip at boot if it"));
+    interface.println(F("  holds another value (e.g. after a battery change). The"));
+    interface.println(F("  query reads the chip; ERROR without an RTC."));
+    interface.println();
+
     interface.println(F("SYSTem:BEEP <ON|OFF>"));
     interface.println(F("SYSTem:BEEP?"));
     interface.println(F("  Enables/disables every acoustic signal: start-up chirp,"));
@@ -682,13 +697,17 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("GRAPh:INTerval <10S|30S|1M|5M|15M|1H|6H|24H|FULL> / ?"));
     interface.println(F("  Time window of the graph, ending now (FULL = the whole"));
     interface.println(F("  log). A number without a unit is taken as seconds."));
-    interface.println(F("GRAPh:YAXis <AUTO|ZERO|SUPP> / ?"));
-    interface.println(F("  AUTO = lowest..highest value of the window, ZERO = the"));
+    interface.println(F("GRAPh:YAXis <AUTO|ROBust|ZERO|SUPP> / ?"));
+    interface.println(F("  AUTO = lowest..highest value of the window, ROBust = like"));
+    interface.print(F("  AUTO without the highest and the lowest "));
+    interface.print(CONFIG_GRAPH_ROBUST_PERCENT);
+    interface.println(F(" % of the"));
+    interface.println(F("  columns (one spike keeps the scale; clipped), ZERO = the"));
     interface.println(F("  axis always includes 0, SUPP = suppressed zero: centre"));
     interface.println(F("  = newest value when chosen, +- GRAPh:SPAN (+10 % reserve)."));
     interface.println(F("GRAPh:TRACe <BOTH|AVG|BAND> / ?"));
     interface.println(F("  BOTH = MIN/MAX band + average line, AVG, BAND."));
-    interface.println(F("GRAPh:SPAN <10|20|50|100|200|500|1000|2000|5000|10000> / ?"));
+    interface.println(F("GRAPh:SPAN <1|2|5|10|20|50|100|200|500|1000|2000|5000|10000> / ?"));
     interface.println(F("  SUPP span, +- counts of the last displayed digit."));
     interface.println(F("  All four persist at once (front-panel changes deferred)."));
     interface.println();
@@ -771,8 +790,11 @@ static void HandleHelpDetail(SCPI_C commands, SCPI_P parameters, Stream &interfa
     interface.println(F("  TAG = a marker was set on this record; SETTLE = one of the"));
     interface.print(F("  first "));
     interface.print(CONFIG_DATALOG_SETTLE_READINGS);
-    interface.println(F(" readings after a change of the function (left"));
-    interface.println(F("  out of the statistics, the graph and the alarm)."));
+    interface.println(F(" readings after a change of the function, the first"));
+    interface.print(F("  "));
+    interface.print(CONFIG_DATALOG_SETTLE_POWERON_READINGS);
+    interface.println(F(" after the K197 was switched on (left out of the"));
+    interface.println(F("  statistics, the graph and the alarm)."));
     interface.println();
 
     interface.println(F("LOG:MARKer"));
@@ -1366,6 +1388,65 @@ static void HandleSystemTimeQuery(SCPI_C commands, SCPI_P parameters, Stream &in
     interface.println();
 }
 
+// v22: SYSTem:TIME:AGINg <-128..127> / ? - see rtc.h.
+static void printAgingRate(Stream &interface, int8_t aging)
+{
+    // about 0.1 ppm per step, 86400 s a day
+    interface.print(F(" (~"));
+    interface.print(aging * 0.1, 1);
+    interface.print(F(" ppm, ~"));
+    interface.print(aging * 8.64, 0);
+    interface.print(F(" ms/day against 0; + = slower)"));
+}
+
+static void HandleSystemTimeAgingSet(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    if (parameters.Size() < 1)
+    {
+        interface.println(F("ERROR: SYSTem:TIME:AGINg needs a value: -128..127"));
+        return;
+    }
+    String param(parameters[0]);
+    param.trim();
+    bool negative = param.startsWith("-");
+    String digits = (negative || param.startsWith("+")) ? param.substring(1) : param;
+    long magnitude;
+    if (digits.length() > 3 || !parseStrictUInt(digits, &magnitude) || (negative ? magnitude > 128 : magnitude > 127))
+    {
+        interface.print(F("ERROR: SYSTem:TIME:AGINg value must be -128..127, got \""));
+        interface.print(param);
+        interface.println('"');
+        return;
+    }
+    int8_t aging = (int8_t)(negative ? -magnitude : magnitude);
+    if (!rtcIsPresent())
+    {
+        interface.println(F("ERROR: SYSTem:TIME:AGINg - no RTC detected on the I2C bus"));
+        return;
+    }
+    if (!rtcSetAging(aging))
+    {
+        interface.println(F("ERROR: SYSTem:TIME:AGINg - RTC write failed"));
+        return;
+    }
+    settingsSetRtcAging(aging);
+    interface.print(F("OK: SYSTem:TIME:AGINg "));
+    interface.print(aging);
+    printAgingRate(interface, aging);
+    interface.println();
+}
+
+static void HandleSystemTimeAgingQuery(SCPI_C commands, SCPI_P parameters, Stream &interface)
+{
+    int8_t aging;
+    if (!rtcIsPresent() || !rtcGetAging(&aging))
+    {
+        interface.println(F("ERROR: SYSTem:TIME:AGINg? - no RTC or RTC read failed"));
+        return;
+    }
+    interface.println(aging);
+}
+
 // SYSTem:BEEP <ON|OFF> / ? - see the persistence comment above and
 // beeper.h. Same shape as HandleSystemDebugSet()/Query() above, on
 // purpose - copy that pair's pattern for any future SYSTem:<ON|OFF>
@@ -1541,6 +1622,17 @@ static void HandleSystemDiagQuery(SCPI_C commands, SCPI_P parameters, Stream &in
     interface.print((uint32_t)(millis() / 1000UL));
     interface.print(F(" s, reset reason "));
     interface.println(bootResetReasonName());
+    {
+        // v22: light sleep while the K197 is off (power.h)
+        PowerStats ps = powerGetStats();
+        interface.print(F("power: "));
+        interface.print(ps.sleeps);
+        interface.print(F(" light sleeps, "));
+        interface.print(ps.asleepSeconds);
+        interface.print(F(" s asleep in all, last wake-up: "));
+        interface.print(powerWakeName(ps.lastWake));
+        interface.println(CONFIG_POWER_SLEEP_ENABLE ? "" : " (sleep disabled in config.h)");
+    }
 
     scpiDiagHeap(interface, "internal RAM", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     scpiDiagHeap(interface, "PSRAM", MALLOC_CAP_SPIRAM);
@@ -1600,6 +1692,10 @@ static void HandleSystemDiagQuery(SCPI_C commands, SCPI_P parameters, Stream &in
     interface.print(F(" records ("));
     interface.print((uint32_t)sizeof(LogRecord));
     interface.print(F(" B each)"));
+    if (CONFIG_DATALOG_TEST_CAPACITY > 0)
+    {
+        interface.print(F(" TEST LIMIT"));
+    }
     uint32_t end = datalogEndSerial(NULL);
     uint32_t oldest = datalogFirstSerialAtOrAfter(1);
     uint32_t t0 = (oldest < end) ? scpiDiagRecordTime(oldest) : 0;
@@ -1732,15 +1828,20 @@ static int scpiFindName(SCPI_P parameters, const char *const *names, uint8_t cou
     return -1;
 }
 
-static const char *const scpiGraphYModeNames[GRAPH_YMODE_COUNT] = {"AUTO", "ZERO", "SUPP"};
+static const char *const scpiGraphYModeNames[GRAPH_YMODE_COUNT] = {"AUTO", "ZERO", "SUPP", "ROBUST"}; // v21: ROBUST (short form ROB below)
 static const char *const scpiGraphTraceNames[GRAPH_TRACE_COUNT] = {"BOTH", "AVG", "BAND"};
 
 static void HandleGraphYAxisSet(SCPI_C commands, SCPI_P parameters, Stream &interface)
 {
     int mode = scpiFindName(parameters, scpiGraphYModeNames, GRAPH_YMODE_COUNT);
+    static const char *const shortRobust[1] = {"ROB"};
+    if (mode < 0 && scpiFindName(parameters, shortRobust, 1) == 0)
+    {
+        mode = GRAPH_YMODE_ROBUST; // SCPI short form of ROBust
+    }
     if (mode < 0)
     {
-        interface.println(F("ERROR: GRAPh:YAXis value must be AUTO, ZERO or SUPP"));
+        interface.println(F("ERROR: GRAPh:YAXis value must be AUTO, ROBust, ZERO or SUPP"));
         return;
     }
     settingsSetGraph(settingsGetGraphInterval(), (uint8_t)mode, settingsGetGraphTrace(), settingsGetGraphSpan());
@@ -1791,7 +1892,7 @@ static void HandleGraphSpanSet(SCPI_C commands, SCPI_P parameters, Stream &inter
     }
     if (index < 0)
     {
-        interface.println(F("ERROR: GRAPh:SPAN value must be 10, 20, 50, 100, 200, 500, 1000, 2000, 5000 or 10000"));
+        interface.println(F("ERROR: GRAPh:SPAN value must be 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000 or 10000"));
         return;
     }
     settingsSetGraph(settingsGetGraphInterval(), settingsGetGraphYMode(), settingsGetGraphTrace(), (uint8_t)index);
@@ -2315,6 +2416,8 @@ void serialOutBegin()
     scpiParser.RegisterCommand(F(":DEBUG?"), &HandleSystemDebugQuery);
     scpiParser.RegisterCommand(F(":TIME"), &HandleSystemTimeSet);
     scpiParser.RegisterCommand(F(":TIME?"), &HandleSystemTimeQuery);
+    scpiParser.RegisterCommand(F(":TIME:AGINg"), &HandleSystemTimeAgingSet); // v22 (one new token: AGINg)
+    scpiParser.RegisterCommand(F(":TIME:AGINg?"), &HandleSystemTimeAgingQuery);
     scpiParser.RegisterCommand(F(":BEEP"), &HandleSystemBeepSet);
     scpiParser.RegisterCommand(F(":BEEP?"), &HandleSystemBeepQuery);
     scpiParser.RegisterCommand(F(":DEBUG:PORT"), &HandleSystemDebugPortSet);
@@ -2484,6 +2587,14 @@ static void scpiAutoSendCheck()
     }
 }
 
+// v22: millis() of the last byte received on the SCPI port (0 = none yet)
+static uint32_t serialOutRxMs = 0;
+
+uint32_t serialOutLastRxMs()
+{
+    return serialOutRxMs;
+}
+
 void serialOutProcess()
 {
     // v18 MEASure:TRIGger MARK: the rear input as a marker key (debounced in trigger_io.ino)
@@ -2496,6 +2607,7 @@ void serialOutProcess()
     while (scpiStream->available())
     {
         char c = scpiStream->read();
+        serialOutRxMs = (uint32_t)millis(); // v22: SCPI traffic keeps the ESP32 awake (power.ino)
         if (c == '\r' || c == '\n')
         {
             if (lineLength > 0)

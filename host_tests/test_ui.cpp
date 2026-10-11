@@ -23,6 +23,9 @@
 // here (the rule itself is checked with whatever value; the reference model follows the constant)
 #undef CONFIG_DATALOG_SETTLE_READINGS
 #define CONFIG_DATALOG_SETTLE_READINGS 3
+// v22: the long power-on settling is tested in test_settle.cpp; here it is the ordinary one
+#undef CONFIG_DATALOG_SETTLE_POWERON_READINGS
+#define CONFIG_DATALOG_SETTLE_POWERON_READINGS CONFIG_DATALOG_SETTLE_READINGS
 #undef CONFIG_UI_STATS_SLICE_US
 #define CONFIG_UI_STATS_SLICE_US 0 // no time budget: exactly one step per poll
 
@@ -85,6 +88,7 @@ static int gDebugMessages = 0;
 void debugLogf(const char *, ...) { if (gDebugTrace) gDebugMessages++; }
 void debugLogAlways(const char *, ...) {}
 DisplayStats displayGetStats() { DisplayStats d; memset(&d, 0, sizeof(d)); return d; }
+void displayWakeUi() {} // v22: uiRequestHome()
 // v17 limit alarm ("EEPROM" of settings.ino, the display symbol)
 static uint8_t gAlarmMode[6] = {3, 3, 3, 3, 3, 3};
 static float gAlarmLow[6] = {NAN, NAN, NAN, NAN, NAN, NAN}, gAlarmHigh[6] = {NAN, NAN, NAN, NAN, NAN, NAN};
@@ -102,6 +106,9 @@ void setAlarmIndicator(uint8_t code) { gAlarmSymbol = code; gAlarmSymbolCalls++;
 
 // ---- the real files under test ----
 #include "reading_math.ino"
+// the tests size the log themselves (ESP.freePsram): no test cap of config.h
+#undef CONFIG_DATALOG_TEST_CAPACITY
+#define CONFIG_DATALOG_TEST_CAPACITY 0
 #include "datalog.ino"
 #include "graph.ino"
 #include "alarm.ino"
@@ -1261,6 +1268,13 @@ int main()
         CHECK(!gRelDbEnabled, "REL/dB do not reach the K197 on the graph");
         uiPoll();
         CHECK(uiGetScreen() == UI_SCREEN_GRAPH, "the graph stays");
+        // v22: the K197 switched off (oFF197) / the ESP32 going to sleep: back to the main display from any screen
+        uiRequestHome();
+        CHECK(uiPoll() && uiGetScreen() == UI_SCREEN_LCD, "uiRequestHome(): graph -> main display");
+        uiRequestHome();
+        CHECK(!uiPoll() && uiGetScreen() == UI_SCREEN_LCD, "uiRequestHome() on the main display changes nothing");
+        press(BUTTON_RCL); uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_GRAPH, "graph open again");
         uint8_t iv = graphGetInterval();
         press(BUTTON_DB);
         uiPoll();
@@ -1278,13 +1292,15 @@ int main()
         for (int i = 0; i < FB_GRAPH_COLUMNS; i++) if (gs.cols[i].flags & FB_GRAPH_COL_DATA) dataCols++;
         CHECK(dataCols > 0, "the graph shows the logged readings");
 
-        // RCL click: next Y axis mode AUTO -> ZERO -> SUPP -> AUTO (at the release)
+        // RCL click: next Y axis mode AUTO -> ROBUST -> ZERO -> SUPP -> AUTO (at the release; v21 ROBUST)
         graphSetYMode(GRAPH_YMODE_AUTO);
         press(BUTTON_RCL); gHeld[BUTTON_RCL] = true;
         uiPoll();
         CHECK(graphGetYMode() == GRAPH_YMODE_AUTO && uiGetScreen() == UI_SCREEN_GRAPH, "RCL press: nothing before the release");
         gHeld[BUTTON_RCL] = false;
-        CHECK(uiPoll() && graphGetYMode() == GRAPH_YMODE_ZERO, "RCL click: AUTO -> ZERO");
+        CHECK(uiPoll() && graphGetYMode() == GRAPH_YMODE_ROBUST, "RCL click: AUTO -> ROBUST");
+        press(BUTTON_RCL); uiPoll();
+        CHECK(graphGetYMode() == GRAPH_YMODE_ZERO, "RCL click: ROBUST -> ZERO");
         press(BUTTON_RCL); uiPoll();
         CHECK(graphGetYMode() == GRAPH_YMODE_SUPP && uiGetScreen() == UI_SCREEN_GRAPH, "RCL click: ZERO -> SUPP");
         press(BUTTON_RCL); uiPoll();
@@ -1307,7 +1323,7 @@ int main()
         uint8_t mode = graphGetYMode();
         press(BUTTON_DB);
         uiPoll();
-        CHECK(graphGetYMode() == (mode + 1) % GRAPH_YMODE_COUNT, "dB: next Y mode");
+        CHECK(mode == GRAPH_YMODE_AUTO && graphGetYMode() == GRAPH_YMODE_ROBUST, "dB: next Y mode (AUTO -> ROBUST)");
         press(BUTTON_REL);
         uiPoll();
         CHECK(graphGetYMode() == mode, "REL: previous Y mode (at the press, no help hold here)");
@@ -1347,6 +1363,30 @@ int main()
         graphSetYMode(GRAPH_YMODE_AUTO);
     }
 
+    // v22: a frame without a measurement function (the K197 switched off, Err197) keeps the last function's
+    // graph and statistics - the log can still be looked at
+    {
+        uiRequestHome();
+        uiPoll();
+        for (int i = 0; i < 30; i++) { feed(123456 + (i % 5), 0, KEITHLEY_UNIT_V); uiPoll(); }
+        press(BUTTON_RCL); gHeld[BUTTON_RCL] = true;
+        uiPoll();
+        gHeld[BUTTON_RCL] = false;
+        uiPoll();
+        CHECK(uiGetScreen() == UI_SCREEN_GRAPH, "graph open for the DMM-off test");
+        feedDigits("      ", -1, 0, KEITHLEY_UNIT_NONE);
+        for (int i = 0; i < 5; i++) { fakeMillisOffset() += 300; uiPoll(); }
+        const FbGraphScene &gs = uiGetGraphScene();
+        int dataCols = 0;
+        for (int i = 0; i < FB_GRAPH_COLUMNS; i++) if (gs.cols[i].flags & FB_GRAPH_COL_DATA) dataCols++;
+        CHECK(strcmp(gs.message, "NO READING") != 0 && strncmp(gs.headLeft, "DCV", 3) == 0 && dataCols > 0,
+              "no reading: the graph keeps the last function's log");
+        CHECK(strncmp(gs.headLive, UI_PLACEHOLDER, strlen(UI_PLACEHOLDER)) == 0, "no reading: no live value in the header");
+        FbStatsScene sc;
+        uiFillStatsScene(&sc);
+        CHECK(strcmp(sc.unit, "V") == 0 && strcmp(sc.average, UI_PLACEHOLDER) != 0, "no reading: the statistics stay (unit V)");
+        printf("v22. no reading: graph '%s' / '%s', statistics AVG %s %s\n", gs.headLeft, gs.headLive, sc.average, sc.unit);
+    }
     printf(failures ? "FAILURES: %d\n" : "ALL OK\n", failures);
     return failures != 0;
 }

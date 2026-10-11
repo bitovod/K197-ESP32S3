@@ -41,6 +41,11 @@ void uiUpdateLiveReading(const char digits[KEITHLEY_DIGIT_COUNT], int8_t dpPos,
 // Returns true if the picture needs to be re-rendered.
 bool uiPoll();
 
+// v22: back to the main LCD screen on the next uiPoll() (from any task, not
+// from an interrupt) - the K197 was switched off ("oFF197", dmm_bridge.ino),
+// or the ESP32 is about to sleep (power.ino).
+void uiRequestHome();
+
 uint8_t uiGetScreen();
 
 // Fills `scene` with the current quick statistics texts (what the last

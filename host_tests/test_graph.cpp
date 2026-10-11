@@ -9,6 +9,9 @@
 #include <string>
 #include <math.h>
 #include "config.h"
+// v22: the long power-on settling is tested in test_settle.cpp; here it is the ordinary one
+#undef CONFIG_DATALOG_SETTLE_POWERON_READINGS
+#define CONFIG_DATALOG_SETTLE_POWERON_READINGS CONFIG_DATALOG_SETTLE_READINGS
 #include "display.h"
 #include "datalog.h"
 #include "reading_math.h"
@@ -36,6 +39,9 @@ void debugLogf(const char *, ...) {}
 void debugLogAlways(const char *, ...) {}
 
 #include "reading_math.ino"
+// the tests size the log themselves (ESP.freePsram): no test cap of config.h
+#undef CONFIG_DATALOG_TEST_CAPACITY
+#define CONFIG_DATALOG_TEST_CAPACITY 0
 #include "datalog.ino"
 // no time budget: exactly one chunk of records per poll, so the slicing is exercised on a fast PC too
 #undef CONFIG_GRAPH_SLICE_US
@@ -334,7 +340,7 @@ int main(int argc, char **argv)
         CHECK(d.axisHigh == 0.0 && d.axisLow < -1.2, "ZERO: negative values -> axis ..0");
         composeGraph("graph_zero");
         graphSetYMode(GRAPH_YMODE_SUPP);
-        graphSetSpan(3); // +-100 counts = +-0.00100 V
+        graphSetSpan(3 + GRAPH_SPANS_ADDED_V21); // +-100 counts = +-0.00100 V
         graphPoll();
         d = graphGetDebug();
         double mid = (d.axisLow + d.axisHigh) / 2;
@@ -343,9 +349,16 @@ int main(int argc, char **argv)
         int clipped = 0;
         for (int i = 0; i < FB_GRAPH_COLUMNS; i++) if (graphScene().cols[i].flags & (FB_GRAPH_COL_CLIP_HI | FB_GRAPH_COL_CLIP_LO)) clipped++;
         CHECK(clipped > 0, "SUPP: values outside are marked");
+        // v21: +-1 count is drawn as +-1 count (not widened to the AUTO minimum of 4 counts)
+        graphSetSpan(0);
+        graphPoll();
+        d = graphGetDebug();
+        CHECK(fabs((d.axisHigh - d.axisLow) - 0.00002 * (1.0 + CONFIG_GRAPH_SUPP_MARGIN_PERCENT / 100.0)) < 1e-12, "SUPP: +-1 count of 10 uV");
+        graphSetSpan(3 + GRAPH_SPANS_ADDED_V21);
+        graphPoll();
         printf("6. ZERO axis %.4f..%.4f V; SUPP axis %.5f..%.5f V, %d columns clipped\n", -1.3, 0.0, d.axisLow, d.axisHigh, clipped);
         composeGraph("graph_supp");
-        graphSetSpan(6); // +-1000 counts
+        graphSetSpan(6 + GRAPH_SPANS_ADDED_V21); // +-1000 counts
         graphPoll();
         composeGraph("graph_supp_wide");
         graphSetTrace(GRAPH_TRACE_AVG);
@@ -479,8 +492,8 @@ int main(int argc, char **argv)
         graphSetupStep(GRAPH_SETUP_ROW_INTERVAL, -1);
         graphSetupStep(GRAPH_SETUP_ROW_INTERVAL, -1);
         graphSetupStep(GRAPH_SETUP_ROW_SPAN, -1);
-        CHECK(graphGetInterval() == 5 && graphGetSpan() == 5, "steps");
-        CHECK(gGraphSaves > saves && gGraphStored[0] == 5 && gGraphStored[3] == 5, "settings persisted");
+        CHECK(graphGetInterval() == 5 && graphGetSpan() == 5 + GRAPH_SPANS_ADDED_V21, "steps");
+        CHECK(gGraphSaves > saves && gGraphStored[0] == 5 && gGraphStored[3] == 5 + GRAPH_SPANS_ADDED_V21, "settings persisted");
         FbSetupScene hs;
         graphFillSetupScene(&hs, GRAPH_SETUP_ROW_YMODE);
         CHECK(hs.cursorRow == GRAPH_SETUP_ROW_YMODE && strcmp(hs.labels[1], "OSA Y") == 0 && strcmp(hs.values[1], "AUTO (MIN..MAX)") == 0, "cursor line");
@@ -651,6 +664,48 @@ int main(int argc, char **argv)
         composeGraph("graph_markers_5min");
         composeGraph("graph_markers_5min_LCD1", 5);
         printf("14. markers: in the record, late, after a rebuild - %d columns marked\n", markedColumns());
+    }
+
+    // ---- 15. v21: ROBUST - one short spike does not set the scale ----
+    {
+        GraphLive l = liveFor("DCI", KEITHLEY_UNIT_UA, 3, "0.293");
+        graphSetLive(&l);
+        graphSetInterval(5); // 1 HOUR
+        graphSetTrace(GRAPH_TRACE_BOTH);
+        // 10 readings: fewer columns than CONFIG_GRAPH_ROBUST_MIN_COLUMNS -> ROBUST = AUTO
+        for (int i = 0; i < 10; i++) feed(i == 9 ? 363 : noisy(293, 1), 2, KEITHLEY_UNIT_UA, 9000);
+        graphSetYMode(GRAPH_YMODE_AUTO);
+        pollUntilIdle();
+        GraphDebug a = graphGetDebug();
+        graphSetYMode(GRAPH_YMODE_ROBUST);
+        pollUntilIdle();
+        GraphDebug r = graphGetDebug();
+        CHECK(a.axisLow == r.axisLow && a.axisHigh == r.axisHigh && r.axisHigh > 0.36, "ROBUST: few columns = AUTO");
+        // one hour, a spike of 6 readings in the middle
+        for (int i = 0; i < 11000; i++)
+        {
+            long c = noisy(293, 1);
+            if (i >= 6000 && i < 6006) c = 280 + (i - 6000) * 17;
+            feed(c, 2, KEITHLEY_UNIT_UA, 320);
+        }
+        graphSetYMode(GRAPH_YMODE_AUTO);
+        pollUntilIdle();
+        a = graphGetDebug();
+        CHECK(a.axisHigh >= 0.365 && a.axisLow <= 0.280 + 1e-9, "AUTO: the spike sets the scale");
+        graphSetYMode(GRAPH_YMODE_ROBUST);
+        pollUntilIdle();
+        r = graphGetDebug();
+        int hi = 0, lo = 0;
+        for (int i = 0; i < FB_GRAPH_COLUMNS; i++)
+        {
+            if (graphScene().cols[i].flags & FB_GRAPH_COL_CLIP_HI) hi++;
+            if (graphScene().cols[i].flags & FB_GRAPH_COL_CLIP_LO) lo++;
+        }
+        CHECK(r.axisLow >= 0.290 - 1e-9 && r.axisHigh <= 0.296 + 1e-9, "ROBUST: the axis follows the noise band");
+        CHECK(hi >= 1 && hi <= 3 && lo <= 3, "ROBUST: the spike column(s) clipped and marked");
+        CHECK(strcmp(graphScene().headMode, "ROBUST") == 0, "ROBUST: name in the head line");
+        printf("15. ROBUST: AUTO %.3f..%.3f, ROBUST %.3f..%.3f, clipped %d up / %d down\n", a.axisLow, a.axisHigh, r.axisLow, r.axisHigh, hi, lo);
+        composeGraph("graph_robust");
     }
 
     if (failures == 0) printf("ALL OK\n");

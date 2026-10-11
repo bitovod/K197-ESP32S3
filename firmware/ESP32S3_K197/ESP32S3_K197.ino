@@ -104,6 +104,7 @@
 #include "marker.h" // v18: markers (TAG)
 #include "graph.h" // v14: GraphLive/GraphColumn must be known before Arduino's generated prototypes (graphSetLive(), ...)
 #include "debuglog.h"
+#include "power.h" // v22: PowerStats must be known before the generated prototypes
 #include "build_info.h"
 #include <esp_system.h>
 #include "soc/soc.h"
@@ -275,6 +276,8 @@ void setup()
     // centisecond resolution to stay accurate.
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     rtcBegin();
+    rtcApplyStoredAging(); // v22: SYSTem:TIME:AGINg kept in the settings, back into the chip if it differs
+    powerBegin();          // v22: light sleep while the K197 is off (power.h)
 
     // One short chirp, now that every other subsystem above is
     // initialized - the audible "boot finished, about to start
@@ -376,6 +379,7 @@ void core1Task(void *pvParameters)
         rtcPoll();
         settingsPoll();  // deferred EEPROM write of front-panel settings (flash write stays out of the UI task)
         debugLogDrain(); // the one place that writes debug messages to Serial and may wait for USB
+        powerPoll();     // v22: light sleep while the K197 is switched off (power.h)
         vTaskDelay(1);
     }
 }

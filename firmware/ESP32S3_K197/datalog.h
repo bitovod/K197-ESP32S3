@@ -422,6 +422,14 @@ static_assert(DATALOG_BIT_MARKER > (1u << (KEITHLEY_INDICATOR_COUNT + 1)), "mark
 // statistics (screen and LOG:MIN?/MAX?/AVERage?/MEDian?), the graph and the
 // alarm's default limits.
 #define DATALOG_BIT_SETTLING 0x4000u
+
+// v22: the K197 was switched off (dmm_bridge.ino, "oFF197"): the first function
+// after it comes back settles for CONFIG_DATALOG_SETTLE_POWERON_READINGS
+// readings instead of CONFIG_DATALOG_SETTLE_READINGS (also after the ESP32 starts).
+void datalogNoteDmmOff();
+// v22: whether the newest reading handed to datalogUpdateReading() was still
+// settling (or not a number) - the alarm uses it, so both follow one rule.
+bool datalogLastReadingSettling();
 static_assert(DATALOG_BIT_SETTLING > (1u << (KEITHLEY_INDICATOR_COUNT + 1)), "settling bit above the K197 indicator bits");
 
 // True for a record the statistics and the graph skip: OL, or still settling.

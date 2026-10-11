@@ -30,7 +30,7 @@ at a high voltage, all of that is at the same voltage.
 | active buzzer | own oscillator, driven HIGH/LOW |
 | optocouplers for the rear trigger I/O | METERING COMPLETE out, EXTERNAL TRIGGER in |
 | isolated USB-UART (CH340) | SCPI on the rear panel |
-| resistors 10 k / 20 k | dividers for the DMM bus tap |
+| resistors 4.7 k / 10 k | dividers for the DMM bus tap |
 
 ## Pins (`config.h`)
 
@@ -53,10 +53,11 @@ S3R8 modules the octal PSRAM pins 33–37.
 ## Connections to the K197
 
 **DMM bus tap.** The K197's CPU talks to the µPD7225 LCD driver over a one-way serial bus (5 V TTL). Each of the
-three lines (clock, data, chip select) goes through a **10 k / 20 k divider** (5 V → 3.3 V, about 170 µA per line)
-to the ESP32. The ESP32 only listens. Bring-up can be done with the original LCD still connected in parallel.
-Each frame has 9 … 17 bytes and comes about 3.5 times per second. Without valid frames for 10 s the replica shows
-`Err197` and the SPI slave restarts.
+three lines (clock, data, chip select) goes through a **4.7 k / 10 k divider** (5 V → 3.4 V, about 340 µA per line;
+10 k / 20 k works the same with half the current) to the ESP32. The ESP32 only listens. Bring-up can be done with the original LCD still connected in parallel.
+Each frame has 9 … 17 bytes and comes about 3.5 times per second. Without valid frames for 4 s the replica shows
+`oFF197` if CS stays quiet and low (the K197 is switched off; the 10 k of the divider holds it low) or `Err197`
+otherwise, and the SPI slave restarts.
 
 **REL / dB.** The original keys connect a sense line to +5 V. One PC817 per line emulates that: LED from the GPIO
 through 220 Ω to GND (about 10 mA), collector to +5 V, emitter to the K197 sense line. Even at the worst-case CTR
@@ -108,7 +109,7 @@ projektu, je vztažená ke **vstupu LO**. Když přístroj měří s LO na vysok
 | aktivní bzučák | vlastní oscilátor, řízení HIGH/LOW |
 | optočleny pro zadní vstupy/výstupy triggeru | výstup METERING COMPLETE, vstup EXTERNAL TRIGGER |
 | oddělený převodník USB-UART (CH340) | SCPI na zadním panelu |
-| rezistory 10 k / 20 k | děliče pro odposlech sběrnice DMM |
+| rezistory 4,7 k / 10 k | děliče pro odposlech sběrnice DMM |
 
 ## Piny (`config.h`)
 
@@ -131,10 +132,10 @@ piny oktální PSRAM 33–37.
 ## Propojení s K197
 
 **Odposlech sběrnice DMM.** Procesor K197 komunikuje s budičem LCD µPD7225 po jednosměrné sériové sběrnici (5 V
-TTL). Každá ze tří linek (hodiny, data, chip select) jde přes **dělič 10 k / 20 k** (5 V → 3,3 V, asi 170 µA na
-linku) do ESP32. ESP32 jen poslouchá. Oživovat jde i s původním LCD zapojeným paralelně. Rámec má 9 až 17 bajtů
-a přichází asi 3,5krát za sekundu. Když 10 s nepřijde platný rámec, replika ukáže `Err197` a SPI slave se
-restartuje.
+TTL). Každá ze tří linek (hodiny, data, chip select) jde přes **dělič 4,7 k / 10 k** (5 V → 3,4 V, asi 340 µA na
+linku; 10 k / 20 k funguje stejně s polovičním proudem) do ESP32. ESP32 jen poslouchá. Oživovat jde i s původním LCD zapojeným paralelně. Rámec má 9 až 17 bajtů
+a přichází asi 3,5krát za sekundu. Když 4 s nepřijde platný rámec, replika ukáže `oFF197`, pokud je CS v klidu
+a v nule (K197 je vypnutý; 10 k děliče ho drží v nule), jinak `Err197`, a SPI slave se restartuje.
 
 **REL / dB.** Původní tlačítka připojují snímací linku na +5 V. To napodobuje jeden PC817 na linku: LED z GPIO přes
 220 Ω na GND (asi 10 mA), kolektor na +5 V, emitor na snímací linku K197. I při nejhorším CTR je k dispozici asi

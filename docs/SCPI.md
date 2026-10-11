@@ -13,6 +13,10 @@ The instrument itself also lists every command with `HELP?` (one line each) and 
 **Parameters:** `<function>` is one of `DCV ACV DCI ACI OHM DB`. Log ranges `[<first> <last>]` and settings
 parameters are separated by **spaces**. The `CALCulate:LIMit` commands accept spaces or commas.
 
+**While the K197 is switched off** the ESP32 may be in light sleep (see the user guide). A start bit on the UART
+wakes it, but that first command is usually lost: send it again (or send an empty line first). The native USB does
+not answer in light sleep.
+
 ## Readings
 
 | Command | Description |
@@ -43,7 +47,7 @@ Examples: `LOG:DATA? DCV`, `LOG:DATA? OHM 10 50`, `LOG:DATA? -50`.
 | `LOG:POINts? […]` | number of matching records |
 | `LOG:CAPacity?` | capacity of the log (records), set by the free PSRAM at boot |
 | `LOG:CLEar` | empties the whole log (the same as RCL held 3 s on the statistics screen) |
-| `LOG:DATA? […]` | CSV: `record,timestamp,status,function,value,indicators`, e.g. `12,2026-10-10 14:03:07.42,N,DCV,+1.23456E+0,AUTO`. The timestamp comes from the RTC (`NO-RTC-TIME` before it was synced). Indicators: AUTO, STO, RCL, REM, BAT, **TAG** (a marker) and **SETTLE** (one of the first 7 readings (about 2 s) after a change of the function, left out of the statistics, the graph and the alarm) |
+| `LOG:DATA? […]` | CSV: `record,timestamp,status,function,value,indicators`, e.g. `12,2026-10-10 14:03:07.42,N,DCV,+1.23456E+0,AUTO`. The timestamp comes from the RTC (`NO-RTC-TIME` before it was synced). Indicators: AUTO, STO, RCL, REM, BAT, **TAG** (a marker) and **SETTLE** (one of the first 7 readings (about 2 s) after a change of the function or the first 20 (about 6 s) after the K197 was switched on, left out of the statistics, the graph and the alarm) |
 | `LOG:MARKer` | sets a marker on the newest record |
 | `LOG:MARKer? […]` | the same CSV, only the marked records |
 | `LOG:MIN? / LOG:MAX? / LOG:AVERage? / LOG:MEDian? […]` | one number over the range, OL and SETTLE records excluded. The median of more than 100 000 records is computed from an evenly spread sample |
@@ -67,15 +71,16 @@ Without `<function>` the commands work on the function being measured.
 | Command | Description |
 |---|---|
 | `GRAPh:INTerval <10S\|30S\|1M\|5M\|15M\|1H\|6H\|24H\|FULL>` / `?` | window of the graph (a plain number = seconds) |
-| `GRAPh:YAXis <AUTO\|ZERO\|SUPP>` / `?` | Y axis mode |
+| `GRAPh:YAXis <AUTO\|ROBust\|ZERO\|SUPP>` / `?` | Y axis mode (ROBust: AUTO without the highest and lowest 2 % of the columns) |
 | `GRAPh:TRACe <BOTH\|AVG\|BAND>` / `?` | band + average, average only, band only |
-| `GRAPh:SPAN <10\|20\|50\|…\|10000>` / `?` | SUPP span, ± counts of the last digit |
+| `GRAPh:SPAN <1\|2\|5\|10\|…\|10000>` / `?` | SUPP span, ± counts of the last digit |
 
 ## System
 
 | Command | Description |
 |---|---|
 | `SYSTem:TIME <YYYY> <MM> <DD> <hh> <mm> <ss>` / `?` | date and time of the DS3231 RTC |
+| `SYSTem:TIME:AGINg <-128..127>` / `?` | aging offset of the DS3231 (rate trim): one step ≈ 0.1 ppm ≈ 8.6 ms a day, positive = slower. Applied at once, kept in the settings, written back at boot if the RTC holds another value |
 | `SYSTem:THEMe <0..7>` / `?` | colour theme (RED, GRN, ORG1, ORG2, VFD, LCD1, LCD2, LCD3) |
 | `SYSTem:LANGuage <CZ\|EN>` / `?` | language of the help and the settings screens |
 | `SYSTem:BEEP <ON\|OFF>` / `?` | all sounds on/off |
@@ -83,7 +88,7 @@ Without `<function>` the commands work on the function being measured.
 | `SYSTem:COMM <UART\|USB>` / `?` | which port SCPI uses (switches at once) |
 | `SYSTem:DEBUG <ON\|OFF>` / `?` | trace of every DMM frame (raw bytes + decoded reading) |
 | `SYSTem:DEBUG:PORT <UART\|USB>` / `?` | where debug messages go (on UART each line starts with `# `) |
-| `SYSTem:DIAGnostic?` | memory, stacks of all tasks, render/blit times, graph and statistics times, log fill |
+| `SYSTem:DIAGnostic?` | memory, stacks of all tasks, render/blit times, graph and statistics times, log fill, light sleeps while the K197 is off (count, time asleep, last wake-up) |
 | `SYSTem:DIAGnostic:CLEar` | zeroes the maxima |
 
 All settings except `MEASure:TRIGger` are kept in EEPROM. Changes from SCPI are saved at once, changes from the
@@ -102,6 +107,10 @@ všechny příkazy po jednom řádku na `HELP?` a podrobný popis na `HELP:DETai
 
 **Parametry:** `<funkce>` je jedna z `DCV ACV DCI ACI OHM DB`. Rozsahy logu `[<od> <do>]` a parametry nastavení se
 oddělují **mezerou**. Příkazy `CALCulate:LIMit` přijmou mezeru i čárku.
+
+**Když je K197 vypnutý**, může být ESP32 v light sleep (viz návod k obsluze). Start bit na UARTu ho probudí, ale
+první příkaz se obvykle ztratí: pošlete ho znovu (nebo nejdřív prázdný řádek). Nativní USB v light sleep
+neodpovídá.
 
 ## Měření
 
@@ -133,7 +142,7 @@ Příklady: `LOG:DATA? DCV`, `LOG:DATA? OHM 10 50`, `LOG:DATA? -50`.
 | `LOG:POINts? […]` | počet odpovídajících záznamů |
 | `LOG:CAPacity?` | kapacita logu (záznamů), určená volnou PSRAM při startu |
 | `LOG:CLEar` | smaže celý log (totéž jako podržení RCL 3 s na obrazovce statistiky) |
-| `LOG:DATA? […]` | CSV: `record,timestamp,status,function,value,indicators`, např. `12,2026-10-10 14:03:07.42,N,DCV,+1.23456E+0,AUTO`. Čas je z RTC (`NO-RTC-TIME` před synchronizací). Indikátory: AUTO, STO, RCL, REM, BAT, **TAG** (marker) a **SETTLE** (jeden z prvních 7 odečtů (asi 2 s) po změně funkce, vynechaný ze statistiky, grafu a alarmu) |
+| `LOG:DATA? […]` | CSV: `record,timestamp,status,function,value,indicators`, např. `12,2026-10-10 14:03:07.42,N,DCV,+1.23456E+0,AUTO`. Čas je z RTC (`NO-RTC-TIME` před synchronizací). Indikátory: AUTO, STO, RCL, REM, BAT, **TAG** (marker) a **SETTLE** (jeden z prvních 7 odečtů (asi 2 s) po změně funkce nebo prvních 20 (asi 6 s) po zapnutí K197, vynechaný ze statistiky, grafu a alarmu) |
 | `LOG:MARKer` | zapíše marker k nejnovějšímu záznamu |
 | `LOG:MARKer? […]` | stejné CSV, jen označené záznamy |
 | `LOG:MIN? / LOG:MAX? / LOG:AVERage? / LOG:MEDian? […]` | jedno číslo za rozsah, bez záznamů OL a SETTLE. Medián z více než 100 000 záznamů se počítá z rovnoměrně rozloženého vzorku |
@@ -157,15 +166,16 @@ Bez `<funkce>` platí příkazy pro právě měřenou funkci.
 | Příkaz | Popis |
 |---|---|
 | `GRAPh:INTerval <10S\|30S\|1M\|5M\|15M\|1H\|6H\|24H\|FULL>` / `?` | okno grafu (samotné číslo = sekundy) |
-| `GRAPh:YAXis <AUTO\|ZERO\|SUPP>` / `?` | režim osy Y |
+| `GRAPh:YAXis <AUTO\|ROBust\|ZERO\|SUPP>` / `?` | režim osy Y (ROBust: AUTO bez 2 % nejvyšších a nejnižších sloupců) |
 | `GRAPh:TRACe <BOTH\|AVG\|BAND>` / `?` | pás + průměr, jen průměr, jen pás |
-| `GRAPh:SPAN <10\|20\|50\|…\|10000>` / `?` | rozpětí pro SUPP, ± digitů poslední číslice |
+| `GRAPh:SPAN <1\|2\|5\|10\|…\|10000>` / `?` | rozpětí pro SUPP, ± digitů poslední číslice |
 
 ## Systém
 
 | Příkaz | Popis |
 |---|---|
 | `SYSTem:TIME <RRRR> <MM> <DD> <hh> <mm> <ss>` / `?` | datum a čas RTC DS3231 |
+| `SYSTem:TIME:AGINg <-128..127>` / `?` | registr stárnutí (aging) DS3231, dolaďuje chod: jeden krok ≈ 0,1 ppm ≈ 8,6 ms za den, kladná hodnota = pomaleji. Platí hned, uloží se do nastavení a při startu se zapíše zpět, pokud RTC drží jinou hodnotu |
 | `SYSTem:THEMe <0..7>` / `?` | barevné téma (RED, GRN, ORG1, ORG2, VFD, LCD1, LCD2, LCD3) |
 | `SYSTem:LANGuage <CZ\|EN>` / `?` | jazyk nápovědy a nastavovacích obrazovek |
 | `SYSTem:BEEP <ON\|OFF>` / `?` | všechny zvuky zap/vyp |
@@ -173,7 +183,7 @@ Bez `<funkce>` platí příkazy pro právě měřenou funkci.
 | `SYSTem:COMM <UART\|USB>` / `?` | port, na kterém běží SCPI (přepne hned) |
 | `SYSTem:DEBUG <ON\|OFF>` / `?` | výpis každého rámce z DMM (surové bajty + dekódovaná hodnota) |
 | `SYSTem:DEBUG:PORT <UART\|USB>` / `?` | kam jdou ladicí zprávy (na UARTu začíná každý řádek `# `) |
-| `SYSTem:DIAGnostic?` | paměť, zásobníky všech tasků, časy vykreslování, grafu a statistiky, zaplnění logu |
+| `SYSTem:DIAGnostic?` | paměť, zásobníky všech tasků, časy vykreslování, grafu a statistiky, zaplnění logu, uspání při vypnutém K197 (počet, doba spánku, poslední probuzení) |
 | `SYSTem:DIAGnostic:CLEar` | vynuluje maxima |
 
 Všechna nastavení kromě `MEASure:TRIGger` se ukládají do EEPROM. Změny přes SCPI se ukládají hned, změny z panelu

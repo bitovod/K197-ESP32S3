@@ -82,15 +82,21 @@ static const char helpTextCzGraph[] =
 "GRAF:                                          \n"
 "Log aktualni funkce: pas MIN/MAX a cara AVG.   \n"
 "REL/dB: kratsi/delsi interval, REL+dB: TAG.    \n"
-"RCL: dalsi osa Y (AUTO, ZERO, SUPP).           \n"
+"RCL: dalsi osa Y (AUTO, ROBUST, ZERO, SUPP).   \n"
 "RCL 1s: nastaveni grafu.                       \n"
-"STO: zpet na zakladni displej.              1/2\n"
+"STO: zpet na zakladni displej.              1/3\n"
 "GRAF - NASTAVENI:                              \n"
 "RCL: dalsi radek, REL/dB: zmena hodnoty.       \n"
 "INTERVAL: 10 SEC az 24 HRS, FULL = cely log.   \n"
 "OSA Y: AUTO min..max, ZERO s nulou, SUPP pevna.\n"
 "STOPA: co kreslit; ROZPETI Y: +- osy u SUPP.   \n"
-"STO: zpet do grafu.                         2/2\n";
+"STO: zpet do grafu.                         2/3\n"
+"OSA Y - ROBUST:                                \n"
+"Jako AUTO, ale 2 % nejvyssich a 2 % nejnizsich \n"
+"sloupcu se do rozsahu nepocita: jedna spicka   \n"
+"nezmeni meritko, orizne se (tecka na okraji).  \n"
+"Pod 20 sloupci s daty stejne jako AUTO.        \n"
+"STO: zpet do grafu.                         3/3\n";
 
 static const char helpTextCzAlarm[] =
 "ALARM - NASTAVENI:                             \n"
@@ -142,15 +148,21 @@ static const char helpTextEnGraph[] =
 "GRAPH:                                         \n"
 "Log of the current function: MIN/MAX band, AVG.\n"
 "REL/dB: shorter/longer interval, REL+dB: TAG.  \n"
-"RCL: next Y axis mode (AUTO, ZERO, SUPP).      \n"
+"RCL: next Y axis (AUTO, ROBUST, ZERO, SUPP).   \n"
 "RCL 1s: graph settings.                        \n"
-"STO: back to the main display.              1/2\n"
+"STO: back to the main display.              1/3\n"
 "GRAPH SETTINGS:                                \n"
 "RCL: next line, REL/dB: change the value.      \n"
 "INTERVAL: 10 SEC to 24 HRS, FULL = whole log.  \n"
 "Y AXIS: AUTO min..max, ZERO with 0, SUPP fixed.\n"
 "TRACE: what to draw; Y SPAN: +- axis in SUPP.  \n"
-"STO: back to the graph.                     2/2\n";
+"STO: back to the graph.                     2/3\n"
+"Y AXIS - ROBUST:                               \n"
+"Like AUTO, but the highest 2 % and the lowest  \n"
+"2 % of the columns do not count for the range: \n"
+"one spike keeps the scale, it is clipped (dot).\n"
+"Below 20 columns with data it is plain AUTO.   \n"
+"STO: back to the graph.                     3/3\n";
 
 static const char helpTextEnAlarm[] =
 "ALARM SETTINGS:                                \n"

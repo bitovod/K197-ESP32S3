@@ -92,6 +92,19 @@ int main(int argc, char **argv)
     lcd("lcd_alarm_high", 1, "130000", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_HIGH, false);
     lcd("lcd_alarm_low", 1, "150000", 0, aut | FB_BIT_MINUS, KEITHLEY_UNIT_V, FB_ALARM_LOW, false);
     lcd("lcd_tag", 1, "123456", 0, aut, KEITHLEY_UNIT_V, FB_ALARM_NONE, true);
+    // v22: the K197 switched off (segment bits as dmm_bridge.ino draws them: o F F 1 9 7)
+    {
+        FbLcdScene off;
+        const uint8_t bits[KEITHLEY_DIGIT_COUNT] = {0x66, 0x2B, 0x2B, 0x50, 0x5B, 0x51};
+        memcpy(off.segBits, bits, sizeof(bits));
+        off.dpPos = -1;
+        off.indicatorBits = 0;
+        off.unit = KEITHLEY_UNIT_NONE;
+        off.alarm = FB_ALARM_NONE;
+        off.tagLit = false;
+        fbComposeLcd(gFb, off);
+        save("lcd_off", 1, false);
+    }
 
     // every color theme: the LCD replica (lit AUT and REL, the rest as ghost)
     for (int t = 0; t < (int)themeCount; t++)

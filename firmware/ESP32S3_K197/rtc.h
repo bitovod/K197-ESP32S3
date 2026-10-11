@@ -78,6 +78,20 @@ void rtcBegin();
 // accepted, deliberate trade-off, not an oversight.
 void rtcPoll();
 
+// v22: DS3231 aging offset register (0x10), a signed trim of the crystal's
+// load capacitance: one step is about 0.1 ppm at 25 C (about 8.6 ms a day),
+// a POSITIVE value SLOWS the clock down (a clock that runs fast needs a
+// higher value). Valid -128 ... 127. rtcSetAging() writes it and starts a
+// temperature conversion, so the new value is in effect at once instead of
+// at the next automatic conversion (up to 64 s). Both return false without
+// an RTC or on an I2C error. The chip keeps the register as long as its
+// backup battery lasts; SYSTem:TIME:AGINg also stores it in the settings,
+// and rtcApplyStoredAging() (setup(), after rtcBegin()) writes it back if
+// the chip holds something else (e.g. after a battery change).
+bool rtcGetAging(int8_t *aging);
+bool rtcSetAging(int8_t aging);
+void rtcApplyStoredAging();
+
 // Whether the DS3231Centisecond library has completed its first sync
 // (i.e. whether a DS3231 answered on the bus and its second-edge has
 // been caught at least once). Checked once meaningfully at boot via

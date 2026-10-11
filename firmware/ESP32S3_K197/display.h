@@ -84,6 +84,13 @@ void displayStartTasks();
 // confirmed). Cheap, safe from any task (not from an interrupt handler).
 void displayWakeUi();
 
+// v22 (power.ino, light sleep): while paused the render task renders nothing
+// (it still runs the user interface); un-pausing renders the current state.
+// displayIsIdle(): no render and no blit running or about to start - the
+// panel is not being written to and keeps its picture on its own (GRAM).
+void displaySetPaused(bool paused);
+bool displayIsIdle();
+
 // Snapshot of the timing counters above.
 DisplayStats displayGetStats();
 

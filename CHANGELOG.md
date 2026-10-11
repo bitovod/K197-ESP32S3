@@ -4,6 +4,8 @@
 
 | Version | Changes |
 |---|---|
+| v22 | **K197 switched off**: `oFF197` (instead of `Err197`) when the K197 sends nothing, every screen goes back to the main display, the graph and statistics keep the last function; light sleep after 60 s without a key, woken by the K197, a key or the SCPI UART (`power.ino`). The first 20 readings (~6 s) after the K197 is switched on are flagged `SETTLE`. No-data time 4 s (was 10 s). `SYSTem:TIME:AGINg` (DS3231 rate trim, kept in the settings). |
+| v21 | Graph Y axis **ROBUST** (AUTO without the highest / lowest 2 % of the columns: one spike does not set the scale). SUPP span from ±1 count. |
 | v20 | The first 7 readings (~2 s, `CONFIG_DATALOG_SETTLE_READINGS`) after a change of the function (and after power-up / the DMM self-test) are flagged `SETTLE`: still logged, but left out of the statistics, the graph, `LOG:MIN?/MAX?/AVERage?/MEDian?`, the alarm and its default limits. |
 | v19 | Slower limit editing on the alarm settings (a step every 200 ms, ×10 every 3 s). SCPI help texts brought up to date (RTC timestamps in `LOG:DATA?`, `SYSTem:BEEP`). |
 | v18 | **Markers**: REL + dB together, `MEASure:TRIGger MARK` (foot switch on the rear trigger input), `LOG:MARKer` / `LOG:MARKer?`. "TAG" in place of REM, double beep, triangles in the graph. On the graph dB acts at the release. |
@@ -23,6 +25,8 @@
 
 | Verze | Změny |
 |---|---|
+| v22 | **Vypnutý K197**: `oFF197` (místo `Err197`), když K197 neposílá nic; každá obrazovka se vrátí na hlavní displej, graf a statistika drží poslední funkci; po 60 s bez stisku light sleep, probudí ho K197, tlačítko nebo UART SCPI (`power.ino`). Prvních 20 odečtů (asi 6 s) po zapnutí K197 má příznak `SETTLE`. Doba bez dat 4 s (dříve 10 s). `SYSTem:TIME:AGINg` (dolaďování chodu DS3231, uloží se do nastavení). |
+| v21 | Osa Y grafu **ROBUST** (AUTO bez 2 % nejvyšších / nejnižších sloupců: jedna špička nezmění měřítko). Rozpětí SUPP od ±1 digitu. |
 | v20 | Prvních 7 odečtů (asi 2 s, `CONFIG_DATALOG_SETTLE_READINGS`) po změně funkce (a po zapnutí / self-testu DMM) mají příznak `SETTLE`: zapíší se do logu, ale statistika, graf, `LOG:MIN?/MAX?/AVERage?/MEDian?`, alarm i jeho výchozí meze je vynechají. |
 | v19 | Pomalejší nastavování mezí alarmu (krok každých 200 ms, ×10 každé 3 s). Aktualizované texty nápovědy SCPI (čas z RTC v `LOG:DATA?`, `SYSTem:BEEP`). |
 | v18 | **Markery**: REL + dB současně, `MEASure:TRIGger MARK` (nožní spínač na zadním vstupu triggeru), `LOG:MARKer` / `LOG:MARKer?`. „TAG“ na místě REM, dvojpípnutí, trojúhelníčky v grafu. V grafu dB reaguje až při uvolnění. |

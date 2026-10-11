@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <deque>
+#include <driver/gpio.h> // v22: a delivered frame is also a CS falling edge for the edge counters
 typedef int esp_err_t;
 #define ESP_OK 0
 #define ESP_ERR_TIMEOUT 0x107
@@ -37,6 +38,7 @@ struct FakeSpiSlave
     int sent = 0;
     int lost = 0; // frames that found no pending transaction
     int droppedResults = 0;
+    int csPin = -1;
 };
 inline FakeSpiSlave &fakeSpi() { static FakeSpiSlave s; return s; }
 inline uint32_t fakeNow() { return (uint32_t)millis(); }
@@ -49,6 +51,7 @@ inline void fakeDeliverDue(uint32_t untilMs)
     while (s.dmmOn && (int32_t)(s.nextFrameMs - untilMs) <= 0)
     {
         s.sent++;
+        if (s.csPin >= 0) fakeGpioEdges(s.csPin, 1); // every frame is framed by CS (v22: DMM-off detection)
         if (s.initialized && !s.pending.empty())
         {
             spi_slave_transaction_t *t = s.pending.front();
@@ -95,6 +98,7 @@ inline esp_err_t spi_slave_initialize(spi_host_device_t, const spi_bus_config_t 
     if (s.initialized) return ESP_ERR_INVALID_STATE;
     s.initialized = true;
     s.queueSize = cfg->queue_size;
+    s.csPin = cfg->spics_io_num;
     s.pending.clear();
     s.done.clear();
     s.inits++;
